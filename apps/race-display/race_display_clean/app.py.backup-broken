@@ -1,0 +1,996 @@
+from flask import Flask, render_template, request, jsonify, Response, send_from_directory
+from flask_cors import CORS
+from flask_session import Session
+import redis
+import os
+import socketserver
+import threading
+import queue
+import json
+import time
+import random
+import hashlib
+import hmac
+import secrets
+import requests
+from datetime import datetime
+from threading import Lock
+from config import (
+    RANDOM_MESSAGES,
+    API_CONFIG,
+    PROTOCOL_CONFIG,
+    SERVER_CONFIG
+)
+from bs4 import BeautifulSoup
+import tinycss2
+from urllib.parse import urljoin, urlparse
+import logging
+from chronotrack_manager import ChronoTrackManager
+
+app = Flask(__name__, static_folder='frontend/dist', static_url_path='/static')
+CORS(app)
+
+# Configure Redis session
+app.config['SESSION_TYPE'] = 'redis'
+app.config['SESSION_REDIS'] = redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'))
+app.config['SESSION_PERMANENT'] = False
+app.config['PERMANENT_SESSION_LIFETIME'] = 3600  # 1 hour
+Session(app)
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Global variables
+roster_data = {}
+data_queue = queue.Queue()
+current_event_id = None
+race_name = None
+current_runner = None  # Track the current runner for API endpoint
+
+# TCP/IP Settings
+HOST = '127.0.0.1'
+PORT = 61611
+BUFFER_SIZE = 1024
+
+# Add after global variables
+listener_lock = Lock()
+listeners_started = False
+
+# Add to global variables
+AUTH_SECRETS = {}  # Store connection-specific secrets
+
+# Track progress while loading roster data
+login_progress = {
+    'total_entries': 0,
+    'loaded_entries': 0,
+    'complete': False
+}
+
+# Directories for saved templates and uploaded images
+TEMPLATE_DIR = os.path.join(app.root_path, 'saved_templates')
+UPLOAD_DIR = os.path.join(app.static_folder, 'uploads')
+DATA_DIR = os.path.join(app.root_path, 'data')
+os.makedirs(TEMPLATE_DIR, exist_ok=True)
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(DATA_DIR, exist_ok=True)
+
+# Add message management functions
+def load_messages():
+    """Load messages from the data directory"""
+    messages_file = os.path.join(DATA_DIR, 'messages.json')
+    if os.path.exists(messages_file):
+        try:
+            with open(messages_file, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Error loading messages: {e}")
+    return RANDOM_MESSAGES.copy()  # Return default messages if file doesn't exist
+
+def save_messages(messages):
+    """Save messages to the data directory"""
+    messages_file = os.path.join(DATA_DIR, 'messages.json')
+    try:
+        with open(messages_file, 'w') as f:
+            json.dump(messages, f)
+        return True
+    except Exception as e:
+        logger.error(f"Error saving messages: {e}")
+        return False
+
+def encode_password(password):
+    """Encode password using SHA-1"""
+    return hashlib.sha1(password.encode('utf-8')).hexdigest()
+
+def fetch_roster_page(event_id, credentials, page=1):
+    """Fetch a single page of roster data"""
+    url = f"{API_CONFIG['BASE_URL']}/event/{event_id}/entry"
+    
+    # Use provided credentials or fall back to defaults
+    user_id = credentials.get('user_id') or API_CONFIG.get('DEFAULT_USER_ID', '')
+    password = credentials.get('user_pass') or API_CONFIG.get('DEFAULT_PASSWORD', '')
+    
+    # Encode the password with SHA-1 (only if not already encoded)
+    if len(password) != 40:  # SHA-1 hash is 40 chars
+        encoded_password = encode_password(password)
+    else:
+        encoded_password = password
+    
+    params = {
+        'format': API_CONFIG['FORMAT'],
+        'client_id': API_CONFIG['CLIENT_ID'],
+        'user_id': user_id,
+        'user_pass': encoded_password,
+        'page': page,
+        'size': 100,  # Increased page size to reduce number of requests
+        'include_test_entries': 'true',
+        'elide_json': 'false'
+    }
+    
+    print(f"Requesting roster from: {url}")
+    print(f"Request parameters: {params}")
+    
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        print(f"API Response status: {response.status_code}")
+        print(f"API Response headers: {dict(response.headers)}")
+        
+        if response.status_code != 200:
+            print(f"API Error: {response.text}")
+            return None, None
+            
+        response.raise_for_status()
+        data = response.json()
+        
+        # Validate response structure
+        if not isinstance(data, dict):
+            print(f"Invalid response format: expected dict, got {type(data)}")
+            return None, None
+            
+        if 'event_entry' not in data:
+            print(f"Missing 'event_entry' in response: {data}")
+            return None, None
+            
+        if not isinstance(data['event_entry'], list):
+            print(f"Invalid 'event_entry' format: expected list, got {type(data['event_entry'])}")
+            return None, None
+            
+        if len(data['event_entry']) > 0:
+            print(f"Successfully fetched {len(data['event_entry'])} entries")
+            # Log first entry for debugging
+            print(f"First entry sample: {data['event_entry'][0]}")
+        else:
+            print(f"Response contained no entries. Response data: {data}")
+            
+        return data, response.headers
+        
+    except requests.exceptions.RequestException as e:
+        print(f"Request error: {e}")
+        return None, None
+    except ValueError as e:
+        print(f"JSON parsing error: {e}")
+        print(f"Response content: {response.text[:500]}...")
+        return None, None
+    except Exception as e:
+        print(f"Error fetching roster page {page}: {e}")
+        return None, None
+
+def fetch_complete_roster(event_id, credentials):
+    """Fetch all pages of roster data"""
+    global roster_data, race_name, login_progress
+    roster_data = {}
+
+    # Reset progress tracking
+    login_progress = {
+        'total_entries': 0,
+        'loaded_entries': 0,
+        'complete': False
+    }
+
+    # Fetch first page to get total pages
+    data, headers = fetch_roster_page(event_id, credentials, page=1)
+    if not data:
+        return False
+    
+    # Get pagination info from headers
+    total_pages = int(headers.get('X-Ctlive-Page-Count', 1))
+    total_rows = int(headers.get('X-Ctlive-Row-Count', 0))
+    login_progress['total_entries'] = total_rows
+    print(f"Total entries to fetch: {total_rows} across {total_pages} pages")
+    
+    # Process first page
+    for entry in data['event_entry']:
+        # Store all relevant runner information
+        bib = entry.get('entry_bib')
+        if not bib:  # If no bib, use entry_id as fallback
+            bib = entry.get('entry_id')
+            
+        if bib:
+            roster_data[bib] = {
+                'name': entry.get('entry_name', ''),  # Full name
+                'first_name': entry.get('athlete_first_name', ''),
+                'last_name': entry.get('athlete_last_name', ''),
+                'age': entry.get('entry_race_age', ''),
+                'gender': entry.get('athlete_sex', ''),
+                'city': entry.get('location_city', ''),
+                'state': entry.get('location_region', ''),
+                'country': entry.get('location_country', ''),
+                'division': entry.get('bracket_name', ''),  # Age group/division
+                'race_name': entry.get('race_name', ''),
+                'reg_choice': entry.get('reg_choice_name', ''),  # Race category
+                'wave': entry.get('wave_name', ''),
+                'team_name': entry.get('team_name', ''),
+                'entry_status': entry.get('entry_status', ''),
+                'entry_type': entry.get('entry_type', ''),
+                'entry_id': entry.get('entry_id', ''),
+                'athlete_id': entry.get('athlete_id', '')
+            }
+            # Store race name (we'll get it from the first entry)
+            if race_name is None:
+                race_name = entry.get('race_name', '')
+            login_progress['loaded_entries'] += 1
+    
+    # Fetch remaining pages
+    for page in range(2, total_pages + 1):
+        print(f"Fetching page {page} of {total_pages}")
+        data, _ = fetch_roster_page(event_id, credentials, page)
+        if data:
+            for entry in data['event_entry']:
+                bib = entry.get('entry_bib')
+                if not bib:  # If no bib, use entry_id as fallback
+                    bib = entry.get('entry_id')
+                    
+                if bib:
+                    roster_data[bib] = {
+                        'name': entry.get('entry_name', ''),
+                        'first_name': entry.get('athlete_first_name', ''),
+                        'last_name': entry.get('athlete_last_name', ''),
+                        'age': entry.get('entry_race_age', ''),
+                        'gender': entry.get('athlete_sex', ''),
+                        'city': entry.get('location_city', ''),
+                        'state': entry.get('location_region', ''),
+                        'country': entry.get('location_country', ''),
+                        'division': entry.get('bracket_name', ''),
+                        'race_name': entry.get('race_name', ''),
+                        'reg_choice': entry.get('reg_choice_name', ''),
+                        'wave': entry.get('wave_name', ''),
+                        'team_name': entry.get('team_name', ''),
+                        'entry_status': entry.get('entry_status', ''),
+                        'entry_type': entry.get('entry_type', ''),
+                        'entry_id': entry.get('entry_id', ''),
+                        'athlete_id': entry.get('athlete_id', '')
+                    }
+                    login_progress['loaded_entries'] += 1
+    
+    print(f"Total runners loaded: {len(roster_data)}")
+    if len(roster_data) != total_rows:
+        print(f"Warning: Expected {total_rows} entries but loaded {len(roster_data)}")
+
+    login_progress['complete'] = True
+
+    return True
+
+def generate_auth_seed():
+    """Generate a random authentication seed"""
+    return secrets.token_hex(16)
+
+def calculate_hmac(seed, password, method='sha1'):
+    """Calculate HMAC digest"""
+    if method == 'sha1':
+        return hmac.new(password.encode(), seed.encode(), hashlib.sha1).hexdigest()
+    elif method == 'md5':
+        return hmac.new(password.encode(), seed.encode(), hashlib.md5).hexdigest()
+    return None
+
+class TimingHandler(socketserver.StreamRequestHandler):
+    def write_command(self, *fields):
+        """Write a command to the socket with proper formatting"""
+        command = PROTOCOL_CONFIG['FIELD_SEPARATOR'].join(map(str, fields))
+        print(">>", command)
+        self.wfile.write((command + PROTOCOL_CONFIG['LINE_TERMINATOR']).encode())
+
+    def read_command(self):
+        """Read a command from the socket"""
+        command = self.rfile.readline().strip().decode()
+        if command:
+            print("<<", command)
+        return command
+
+    def handle(self):
+        print("-- Client connected --")
+
+        # Consume the greeting
+        greeting = self.read_command()
+
+        # Send our response with settings
+        settings = (
+            "location=multi",
+            "guntimes=true", 
+            "newlocations=true",
+            "authentication=none",
+            "stream-mode=push",
+            "time-format=iso"
+        )
+        
+        # Send initial greeting with settings count
+        self.write_command("RaceDisplay", "Version 1.0 Level 2024.02", len(settings))
+        
+        # Send each setting
+        for setting in settings:
+            self.write_command(setting)
+
+        # Request event info and locations
+        self.write_command("geteventinfo")
+        self.write_command("getlocations")
+        
+        # Start the data feed
+        self.write_command("start")
+
+        # Process incoming data
+        while True:
+            line = self.read_command()
+            if not line:
+                break
+
+            if line == 'ping':
+                self.write_command("ack", "ping")
+                continue
+
+            # Handle initialization acknowledgments
+            if line.startswith('ack~'):
+                parts = line.split('~')
+                if len(parts) >= 2:
+                    ack_type = parts[1]
+                    if ack_type == 'init':
+                        # Accept any ack~init response
+                        continue
+                    elif ack_type == 'geteventinfo':
+                        # Accept event info response
+                        continue
+                    elif ack_type == 'getlocations':
+                        # Accept locations response
+                        continue
+                    elif ack_type == 'start':
+                        # Accept start acknowledgment
+                        continue
+
+            # Process timing data
+            processed_data = process_timing_data(line)
+            if processed_data:
+                global current_runner
+                current_runner = processed_data  # Update current runner for API endpoint
+                data_queue.put(processed_data)
+
+        print("-- Client disconnected --")
+
+def monitor_data_feed():
+    """Start the TCP server"""
+    print(f"Starting TCP server on {PROTOCOL_CONFIG['HOST']}:{PROTOCOL_CONFIG['PORT']}")
+    try:
+        server = socketserver.ThreadingTCPServer(
+            (PROTOCOL_CONFIG['HOST'], PROTOCOL_CONFIG['PORT']), 
+            TimingHandler
+        )
+        print(f"Server listening on port {PROTOCOL_CONFIG['PORT']}")
+        server.serve_forever()
+    except Exception as e:
+        print(f"Error in TCP server: {e}")
+        raise
+
+def start_listeners():
+    """Start TCP listener"""
+    global listeners_started
+    
+    with listener_lock:
+        if listeners_started:
+            print("Listener already running")
+            return True
+            
+        try:
+            # Start TCP listener
+            tcp_thread = threading.Thread(target=monitor_data_feed)
+            tcp_thread.daemon = False  # Make it a non-daemon thread
+            tcp_thread.start()
+            print("TCP server thread started")
+            
+            listeners_started = True
+            return True
+            
+        except Exception as e:
+            print(f"Failed to start listener: {e}")
+            return False
+
+def process_timing_data(line):
+    """Process timing data in CT01_33 format:
+    format_id~sequence~location~bib~time~gator~tagcode~lap
+    Example: CT01_33~1~start~9478~14:02:15.31~0~0F2A38~1
+    """
+    print(f"Processing line: {line}")
+    try:
+        parts = line.split(PROTOCOL_CONFIG['FIELD_SEPARATOR'])
+        print(f"Split parts: {parts}")
+        
+        if len(parts) >= 8 and parts[0] == PROTOCOL_CONFIG['FORMAT_ID']:
+            data = {
+                'format': parts[0],
+                'sequence': parts[1],
+                'location': parts[2],
+                'bib': parts[3],
+                'time': parts[4],
+                'gator': parts[5],
+                'tagcode': parts[6],
+                'lap': parts[7]
+            }
+            print(f"Parsed data: {data}")
+            
+            if data['bib'] == 'guntime':
+                print("Skipping guntime event")
+                return None
+                
+            if data['bib'] in roster_data:
+                print(f"Found bib {data['bib']} in roster")
+                runner_data = roster_data[data['bib']]
+                processed_data = {
+                    'name': runner_data['name'],  # Use full name from entry_name
+                    'first_name': runner_data['first_name'],
+                    'last_name': runner_data['last_name'],
+                    'age': runner_data['age'],
+                    'gender': runner_data['gender'],
+                    'city': runner_data['city'],
+                    'state': runner_data['state'],
+                    'country': runner_data['country'],
+                    'division': runner_data['division'],
+                    'race_name': runner_data['race_name'],
+                    'reg_choice': runner_data['reg_choice'],
+                    'wave': runner_data['wave'],
+                    'team_name': runner_data['team_name'],
+                    'message': random.choice(load_messages()),
+                    'timestamp': data['time'],
+                    'location': data['location'],
+                    'lap': data['lap'],
+                    'bib': data['bib']
+                }
+                print(f"Runner found: {processed_data}")
+                return processed_data
+            else:
+                print(f"Bib {data['bib']} not found in roster. Available bibs: {list(roster_data.keys())[:5]}...")
+                
+    except Exception as e:
+        print(f"Error processing timing data: {e}")
+        print(f"Line causing error: {line}")
+    return None
+
+@app.route('/old')
+def old_index():
+    default_credentials = {
+        'user_id': API_CONFIG.get('DEFAULT_USER_ID', ''),
+        'event_id': API_CONFIG.get('DEFAULT_EVENT_ID', ''),
+        'password': API_CONFIG.get('DEFAULT_PASSWORD', '')
+    }
+    return render_template('old_index.html', credentials=default_credentials)
+
+# ---------------------------------------------------------------------------
+# API Routes - These must come BEFORE the catch-all React routes
+# ---------------------------------------------------------------------------
+
+@app.route('/api/test-connection', methods=['POST'])
+def test_connection():
+    """Test endpoint to verify API connectivity"""
+    try:
+        password = request.form['password']
+        
+        # If password field contains a SHA-1 hash (already encoded), use it directly
+        if len(password) == 40 and all(c in '0123456789abcdef' for c in password.lower()):
+            encoded_password = password
+        else:
+            # Otherwise encode it
+            encoded_password = encode_password(password)
+            
+        credentials = {
+            'user_id': request.form['user_id'],
+            'user_pass': encoded_password,
+            'event_id': request.form['event_id']
+        }
+        
+        # Just test the connection to the API
+        url = f"{API_CONFIG['BASE_URL']}/event/{credentials['event_id']}/entry"
+        
+        params = {
+            'format': API_CONFIG['FORMAT'],
+            'client_id': API_CONFIG['CLIENT_ID'],
+            'user_id': credentials['user_id'],
+            'user_pass': encoded_password,
+            'page': 1,
+            'size': 1  # Just request 1 entry to minimize data transfer
+        }
+        
+        print(f"Testing connection to: {url}")
+        print(f"With parameters: {params}")
+        
+        response = requests.get(url, params=params, timeout=10)
+        
+        result = {
+            'status_code': response.status_code,
+            'success': response.status_code == 200,
+            'headers': dict(response.headers),
+        }
+        
+        # If successful, include a sample of the data
+        if response.status_code == 200:
+            try:
+                data = response.json()
+                result['data_sample'] = {
+                    'has_entries': 'event_entry' in data,
+                    'entry_count': len(data.get('event_entry', [])),
+                    'first_entry': data.get('event_entry', [{}])[0] if data.get('event_entry') else None
+                }
+            except ValueError:
+                result['parse_error'] = 'Could not parse JSON response'
+                result['response_text'] = response.text[:500]  # First 500 chars
+        else:
+            result['error_text'] = response.text
+            
+        return jsonify(result)
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'error_type': type(e).__name__
+        })
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    try:
+        # Get credentials from request
+        if request.is_json:
+            data = request.get_json()
+            password = data.get('password')
+            user_id = data.get('user_id')
+            event_id = data.get('event_id')
+        else:
+            password = request.form['password']
+            user_id = request.form['user_id']
+            event_id = request.form['event_id']
+        
+        # If password field contains a SHA-1 hash (already encoded), use it directly
+        if len(password) == 40 and all(c in '0123456789abcdef' for c in password.lower()):
+            encoded_password = password
+        else:
+            # Otherwise encode it
+            encoded_password = encode_password(password)
+            
+        credentials = {
+            'user_id': user_id,
+            'user_pass': encoded_password,
+            'event_id': event_id
+        }
+        
+        global current_event_id
+        current_event_id = credentials['event_id']
+        
+        response = {
+            "success": False,
+            "status": "Authenticating...",
+            "stage": 1,
+            "total_stages": 4
+        }
+        
+        # Fetch roster data
+        if fetch_complete_roster(current_event_id, credentials):
+            response.update({
+                "status": "Roster loaded successfully",
+                "stage": 2,
+                "race_name": race_name,
+                "runners_loaded": len(roster_data),
+                "credentials_valid": True
+            })
+            
+            if start_listeners():
+                response.update({
+                    "success": True,
+                    "status": "Ready to receive timing data",
+                    "stage": 3,
+                    "middleware_connected": True,
+                    "display_active": True
+                })
+                
+        else:
+            response.update({
+                "error": "Failed to fetch roster",
+                "stage": 2
+            })
+            
+    except Exception as e:
+        response = {
+            "success": False,
+            "error": f"Login failed: {str(e)}",
+            "stage": 1
+        }
+    
+    return jsonify(response)
+
+@app.route('/api/login-progress')
+def get_login_progress():
+    """Return current roster loading progress"""
+    return jsonify(login_progress)
+
+@app.route('/api/current-runner')
+def get_current_runner():
+    """Return current runner data for the display"""
+    global current_runner
+    if current_runner:
+        return jsonify(current_runner)
+    else:
+        return jsonify({})
+
+@app.route('/stream')
+def stream():
+    def generate():
+        while True:
+            try:
+                # Try to get data from the queue, timeout after 1 second
+                data = data_queue.get(timeout=1)
+                yield f"data: {json.dumps(data)}\n\n"
+            except queue.Empty:
+                # Send keepalive message if no data
+                yield f"data: {json.dumps({'keepalive': True})}\n\n"
+    
+    response = Response(generate(), mimetype='text/event-stream')
+    response.headers['Cache-Control'] = 'no-cache'
+    response.headers['Connection'] = 'keep-alive'
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    return response
+
+def is_valid_url(url):
+    """Validate URL format and security"""
+    try:
+        result = urlparse(url)
+        return all([result.scheme, result.netloc])
+    except Exception as e:
+        logger.error("Failed to parse URL '%s': %s", url, e)
+        return False
+
+def extract_colors_from_css(css_text):
+    """Extract color values from CSS"""
+    colors = set()
+    rules = tinycss2.parse_stylesheet(css_text)
+    
+    # Common CSS color names and their hex values
+    css_colors = {
+        'black': '#000000', 'white': '#ffffff', 'red': '#ff0000',
+        'green': '#00ff00', 'blue': '#0000ff', 'yellow': '#ffff00',
+        'purple': '#800080', 'gray': '#808080', 'orange': '#ffa500'
+    }
+    
+    for rule in rules:
+        if rule.type == 'qualified-rule':
+            for token in rule.content:
+                if token.type == 'hash':
+                    # Handle hex colors
+                    colors.add(f'#{token.value}')
+                elif token.type == 'function' and token.name in ['rgb', 'rgba']:
+                    # Handle rgb/rgba colors
+                    colors.add(token.serialize())
+                elif token.type == 'ident' and token.value.lower() in css_colors:
+                    # Handle named colors
+                    colors.add(css_colors[token.value.lower()])
+    
+    return list(colors)
+
+def extract_fonts_from_css(css_text):
+    """Extract font families from CSS"""
+    fonts = set()
+    rules = tinycss2.parse_stylesheet(css_text)
+    
+    for rule in rules:
+        if rule.type == 'qualified-rule':
+            for token in rule.content:
+                if token.type == 'function' and token.name == 'font-family':
+                    fonts.add(token.serialize())
+    
+    return list(fonts)
+
+@app.route('/api/fetch-styles', methods=['POST'])
+def fetch_styles():
+    url = request.json.get('url')
+    
+    if not url or not is_valid_url(url):
+        return jsonify({'error': 'Invalid URL'}), 400
+    
+    try:
+        # Fetch the webpage
+        headers = {'User-Agent': 'Mozilla/5.0 (compatible; RaceDisplay/1.0)'}
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Extract styles
+        styles = {
+            'colors': set(),
+            'fonts': set(),
+            'backgrounds': set()
+        }
+        
+        # Process external stylesheets
+        for link in soup.find_all('link', rel='stylesheet'):
+            href = link.get('href')
+            if href:
+                css_url = urljoin(url, href)
+                try:
+                    css_response = requests.get(css_url, headers=headers, timeout=5)
+                    if css_response.ok:
+                        styles['colors'].update(extract_colors_from_css(css_response.text))
+                        styles['fonts'].update(extract_fonts_from_css(css_response.text))
+                except requests.RequestException as e:
+                    logger.warning("Failed to fetch CSS %s: %s", css_url, e)
+                    continue
+        
+        # Process inline styles
+        for style in soup.find_all('style'):
+            styles['colors'].update(extract_colors_from_css(style.string or ''))
+            styles['fonts'].update(extract_fonts_from_css(style.string or ''))
+        
+        # Extract main background
+        body = soup.find('body')
+        if body:
+            bg_color = body.get('style', '').split('background-color:')[-1].split(';')[0].strip()
+            if bg_color:
+                styles['backgrounds'].add(bg_color)
+        
+        # Convert sets to lists for JSON serialization
+        styles = {k: list(v) for k, v in styles.items()}
+        
+        # Add some metadata
+        styles['title'] = soup.title.string if soup.title else ''
+        styles['url'] = url
+        
+        return jsonify(styles)
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/messages', methods=['GET', 'POST'])
+def manage_messages():
+    """Get all messages or add a new message"""
+    if request.method == 'GET':
+        return jsonify(load_messages())
+        
+    # POST method
+    try:
+        data = request.get_json()
+        if not data or 'text' not in data:
+            return jsonify({'error': 'Missing text field'}), 400
+            
+        messages = load_messages()
+        if data['text'] not in messages:  # Only append if unique
+            messages.append(data['text'])
+            if save_messages(messages):
+                return jsonify(messages)
+            else:
+                return jsonify({'error': 'Failed to save messages'}), 500
+        return jsonify(messages)
+        
+    except Exception as e:
+        logger.error(f"Error in manage_messages: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/messages/<int:index>', methods=['DELETE'])
+def delete_message(index):
+    """Delete a message by index"""
+    try:
+        messages = load_messages()
+        if 0 <= index < len(messages):
+            messages.pop(index)
+            if save_messages(messages):
+                return jsonify(messages)
+            else:
+                return jsonify({'error': 'Failed to save messages'}), 500
+        return jsonify({'error': 'Invalid index'}), 400
+    except Exception as e:
+        logger.error(f"Error in delete_message: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+# ---------------------------------------------------------------------------
+# Template and asset management endpoints
+# ---------------------------------------------------------------------------
+
+@app.route('/api/upload-image', methods=['POST'])
+def upload_image():
+    """Handle image uploads from the editor"""
+    logger.info("Received upload request")
+    logger.info("Request files: %s", request.files)
+    logger.info("Request form: %s", request.form)
+    
+    # Try different possible field names for files
+    files = (request.files.getlist('files[]') or 
+             request.files.getlist('files') or 
+             request.files.getlist('file'))
+             
+    if not files:
+        logger.error("No files found in request")
+        return jsonify({'error': 'No files uploaded'}), 400
+        
+    urls = []
+    for f in files:
+        logger.info("Processing file: %s", f.filename)
+        fname = ''.join(c for c in f.filename if c.isalnum() or c in ('_', '-', '.'))
+        path = os.path.join(UPLOAD_DIR, fname)
+        try:
+            f.save(path)
+            urls.append(f'/static/uploads/{fname}')
+            logger.info("Successfully saved file to: %s", path)
+        except Exception as e:
+            logger.error("Failed to save file: %s", str(e))
+            return jsonify({'error': f'Failed to save file: {str(e)}'}), 500
+            
+    return jsonify({'data': urls})
+
+
+@app.route('/api/templates', methods=['GET', 'POST'])
+def manage_templates():
+    """Save a template or list available templates"""
+    if request.method == 'POST':
+        data = request.get_json(silent=True) or {}
+        name = data.get('name')
+        html = data.get('html')
+        if not name or not html:
+            return jsonify({'error': 'Missing name or html'}), 400
+        safe = ''.join(c for c in name if c.isalnum() or c in ('_', '-')).rstrip()
+        with open(os.path.join(TEMPLATE_DIR, f'{safe}.html'), 'w', encoding='utf-8') as fp:
+            fp.write(html)
+        return jsonify({'success': True})
+
+    templates = [f[:-5] for f in os.listdir(TEMPLATE_DIR) if f.endswith('.html')]
+    return jsonify(templates)
+
+
+@app.route('/api/templates/<name>', methods=['GET', 'DELETE'])
+def get_template(name):
+    """Retrieve or delete a saved template"""
+    safe = ''.join(c for c in name if c.isalnum() or c in ('_', '-')).rstrip()
+    path = os.path.join(TEMPLATE_DIR, f'{safe}.html')
+    
+    if request.method == 'DELETE':
+        if not os.path.exists(path):
+            return jsonify({'error': 'Template not found'}), 404
+        try:
+            os.remove(path)
+            return jsonify({'success': True})
+        except Exception as e:
+            logger.error(f"Failed to delete template {name}: {str(e)}")
+            return jsonify({'error': 'Failed to delete template'}), 500
+    
+    # GET method
+    if not os.path.exists(path):
+        return jsonify({'error': 'Template not found'}), 404
+    with open(path, 'r', encoding='utf-8') as fp:
+        html = fp.read()
+    return jsonify({'html': html})
+
+
+# ---------------------------------------------------------------------------
+# React Frontend Routes - These must come AFTER all API routes
+# ---------------------------------------------------------------------------
+
+@app.route('/')
+def serve_react():
+    """Serve React frontend"""
+    return send_from_directory(app.static_folder, 'index.html')
+
+@app.route('/<path:path>')
+def serve_react_routes(path):
+    """Serve React routes and static files"""
+    # Don't serve React for API endpoints
+    if path.startswith('api/'):
+        return jsonify({'error': 'API endpoint not found'}), 404
+    
+    # Try to serve static file first
+    import os
+    file_path = os.path.join(app.static_folder, path)
+    if os.path.exists(file_path) and os.path.isfile(file_path):
+        return send_from_directory(app.static_folder, path)
+    else:
+        # If file doesn't exist, serve React app (for client-side routing)
+        return send_from_directory(app.static_folder, 'index.html')
+
+@app.route('/api/display-settings', methods=['GET', 'POST'])
+def display_settings():
+    """Manage display settings"""
+    if request.method == 'GET':
+        # Return default display duration (5 seconds)
+        return jsonify({'duration': 5})
+    
+    elif request.method == 'POST':
+        # Save display settings (for now just return success)
+        data = request.get_json()
+        duration = data.get('duration', 5)
+        # In a real implementation, you'd save this to a database or file
+        return jsonify({'success': True, 'duration': duration})
+
+@app.route('/debug-display')
+def debug_display():
+    """Debug route to test if our routes work"""
+    return send_from_directory(app.static_folder, 'index.html')
+
+# Initialize ChronoTrack manager
+chronotrack_manager = ChronoTrackManager(os.getenv('REDIS_URL', 'redis://localhost:6379/0'))
+
+@app.route('/api/chronotrack/connect', methods=['POST'])
+def chronotrack_connect():
+    """Connect to ChronoTrack server"""
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    required_fields = ['host', 'port', 'user_id', 'password']
+    if not all(field in data for field in required_fields):
+        return jsonify({'error': 'Missing required fields'}), 400
+
+    session_id = session.get('id')
+    if not session_id:
+        session_id = secrets.token_hex(16)
+        session['id'] = session_id
+
+    success = chronotrack_manager.connect_client(
+        session_id,
+        data['host'],
+        int(data['port']),
+        data['user_id'],
+        data['password']
+    )
+
+    if success:
+        return jsonify({'status': 'connected', 'session_id': session_id})
+    return jsonify({'error': 'Failed to connect'}), 500
+
+@app.route('/api/chronotrack/disconnect', methods=['POST'])
+def chronotrack_disconnect():
+    """Disconnect from ChronoTrack server"""
+    session_id = session.get('id')
+    if not session_id:
+        return jsonify({'error': 'No active session'}), 400
+
+    chronotrack_manager.disconnect_client(session_id)
+    return jsonify({'status': 'disconnected'})
+
+@app.route('/api/chronotrack/event', methods=['GET'])
+def chronotrack_event():
+    """Get current event information"""
+    session_id = session.get('id')
+    if not session_id:
+        return jsonify({'error': 'No active session'}), 400
+
+    event_info = chronotrack_manager.get_event_info(session_id)
+    if event_info:
+        return jsonify(event_info)
+    return jsonify({'error': 'Failed to get event info'}), 500
+
+@app.route('/api/chronotrack/locations', methods=['GET'])
+def chronotrack_locations():
+    """Get available locations"""
+    session_id = session.get('id')
+    if not session_id:
+        return jsonify({'error': 'No active session'}), 400
+
+    locations = chronotrack_manager.get_locations(session_id)
+    return jsonify(locations)
+
+@app.route('/api/chronotrack/status', methods=['GET'])
+def chronotrack_status():
+    """Get connection status"""
+    session_id = session.get('id')
+    if not session_id:
+        return jsonify({'status': 'disconnected'})
+
+    is_connected = chronotrack_manager.is_connected(session_id)
+    return jsonify({'status': 'connected' if is_connected else 'disconnected'})
+
+if __name__ == '__main__':
+    app.run(
+        debug=SERVER_CONFIG['DEBUG'],
+        host=SERVER_CONFIG['HOST'],
+        port=SERVER_CONFIG['PORT'],
+        use_reloader=False,
+        threaded=True
+    )

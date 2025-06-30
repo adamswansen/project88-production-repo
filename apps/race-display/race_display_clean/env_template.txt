@@ -1,0 +1,28 @@
+# Race Display Application Environment Configuration
+# Copy this file to .env and update with your actual values
+
+# Application Settings
+SECRET_KEY=your-secret-key-here-change-in-production-use-long-random-string
+LOG_LEVEL=INFO
+DEBUG_TIMING=false
+
+# ChronoTrack API Credentials
+CHRONO_USER_ID=your_chronotrack_username
+CHRONO_PASSWORD=your_chronotrack_password
+CHRONO_EVENT_ID=your_default_event_id
+
+# Database Configuration (PostgreSQL)
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=raw_tag_data
+DB_USER=race_timing_user
+DB_PASSWORD=your_secure_database_password
+
+# Redis Configuration (for session management)
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_DB=0
+
+# Optional: Override default ports
+# SERVER_PORT=5000
+# CHRONO_TCP_PORT=61611 

@@ -1,0 +1,461 @@
+#!/usr/bin/env python3
+"""
+ChronoTrack Timing Data Collector Service
+Lightweight 24/7 service for receiving timing data
+"""
+
+import socketserver
+import threading
+import queue
+import time
+import json
+import logging
+import psycopg2
+from datetime import datetime, date
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import urllib.parse
+
+# Configuration
+PROTOCOL_CONFIG = {
+    'HOST': '0.0.0.0',
+    'PORT': 61611,
+    'BUFFER_SIZE': 1024,
+    'TIMEOUT': 30,
+    'FIELD_SEPARATOR': '~',
+    'LINE_TERMINATOR': '\r\n',
+    'FORMAT_ID': 'CT01_33'
+}
+
+# Database configuration for timing data
+RAW_TAG_DATABASE_CONFIG = {
+    'host': 'localhost',
+    'port': 5432,
+    'database': 'raw_tag_data',
+    'user': 'race_timing_user',
+    'password': 'Rt8#mK9$vX2&nQ5@pL7'
+}
+
+# Status API configuration
+STATUS_API_CONFIG = {
+    'HOST': '127.0.0.1',
+    'PORT': 61612
+}
+
+# Global variables
+data_queue = queue.Queue()
+listener_lock = threading.Lock()
+listeners_started = False
+current_session_id = None
+connection_count = 0
+total_reads_received = 0
+
+# Setup logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+def get_database_connection():
+    """Get database connection for timing data"""
+    try:
+        return psycopg2.connect(**RAW_TAG_DATABASE_CONFIG)
+    except Exception as e:
+        logger.error(f"Database connection failed: {e}")
+        return None
+
+def create_timing_session(event_name="Live Event"):
+    """Create a new timing session"""
+    global current_session_id
+    
+    conn = get_database_connection()
+    if not conn:
+        return None
+        
+    try:
+        cursor = conn.cursor()
+        session_name = f"Session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        cursor.execute("""
+            INSERT INTO timing_sessions (session_name, event_name, status)
+            VALUES (%s, %s, 'active')
+            RETURNING id
+        """, (session_name, event_name))
+        
+        session_id = cursor.fetchone()[0]
+        conn.commit()
+        current_session_id = session_id
+        
+        logger.info(f"Created timing session: {session_name} (ID: {session_id})")
+        return session_id
+        
+    except Exception as e:
+        logger.error(f"Failed to create timing session: {e}")
+        return None
+    finally:
+        conn.close()
+
+def get_or_create_location(session_id, location_name, reader_id=None):
+    """Get or create timing location"""
+    conn = get_database_connection()
+    if not conn:
+        return None
+        
+    try:
+        cursor = conn.cursor()
+        
+        # Try to find existing location
+        cursor.execute("""
+            SELECT id FROM timing_locations 
+            WHERE session_id = %s AND location_name = %s
+        """, (session_id, location_name))
+        
+        result = cursor.fetchone()
+        if result:
+            return result[0]
+            
+        # Create new location
+        cursor.execute("""
+            INSERT INTO timing_locations (session_id, location_name, reader_id)
+            VALUES (%s, %s, %s)
+            RETURNING id
+        """, (session_id, location_name, reader_id))
+        
+        location_id = cursor.fetchone()[0]
+        conn.commit()
+        
+        logger.info(f"Created timing location: {location_name} (ID: {location_id})")
+        return location_id
+        
+    except Exception as e:
+        logger.error(f"Failed to create timing location: {e}")
+        return None
+    finally:
+        conn.close()
+
+def store_timing_read(data):
+    """Store timing read in database"""
+    global total_reads_received
+    
+    if not current_session_id:
+        logger.warning("No active session - creating one")
+        create_timing_session()
+        
+    if not current_session_id:
+        logger.error("Could not create session - skipping timing read")
+        return False
+        
+    conn = get_database_connection()
+    if not conn:
+        return False
+        
+    try:
+        cursor = conn.cursor()
+        
+        # Get or create location
+        location_id = get_or_create_location(current_session_id, data['location'], data.get('gator'))
+        if not location_id:
+            logger.error("Could not create location")
+            return False
+            
+        # Insert timing read
+        cursor.execute("""
+            INSERT INTO timing_reads (
+                session_id, location_id, sequence_number, location_name,
+                tag_code, read_time, read_date, lap_count, reader_id,
+                gator_number, raw_data
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (
+            current_session_id,
+            location_id,
+            int(data['sequence']),
+            data['location'],
+            data['tagcode'],
+            data['time'].split('T')[1] if 'T' in data['time'] else data['time'],
+            data['time'].split('T')[0] if 'T' in data['time'] else date.today(),
+            int(data['lap']),
+            data.get('gator'),
+            int(data.get('gator', 0)),
+            json.dumps(data)
+        ))
+        
+        conn.commit()
+        total_reads_received += 1
+        
+        logger.info(f"Stored timing read: Bib {data['bib']}, Location {data['location']}, Time {data['time'].split('T')[1] if 'T' in data['time'] else data['time']}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to store timing read: {e}")
+        return False
+    finally:
+        conn.close()
+
+class TimingHandler(socketserver.StreamRequestHandler):
+    """Handle ChronoTrack TCP connections with proper handshake"""
+    
+    def write_command(self, *fields):
+        """Write a command to the socket with proper formatting"""
+        command = PROTOCOL_CONFIG['FIELD_SEPARATOR'].join(map(str, fields))
+        logger.debug(f">> {command}")
+        self.wfile.write((command + PROTOCOL_CONFIG['LINE_TERMINATOR']).encode())
+
+    def read_command(self):
+        """Read a command from the socket"""
+        try:
+            command = self.rfile.readline().strip().decode()
+            if command:
+                logger.debug(f"<< {command}")
+            return command
+        except Exception as e:
+            logger.error(f"Error reading command: {e}")
+            return ""
+
+    def handle(self):
+        global connection_count
+        connection_count += 1
+        client_ip = self.client_address[0]
+        
+        logger.info(f"ChronoTrack client connected from {client_ip}")
+
+        try:
+            # Consume the greeting
+            greeting = self.read_command()
+            logger.info(f"Received greeting: {greeting}")
+
+            # Give ChronoTrack time to settle after initial connection
+            time.sleep(0.5)
+
+            # Send our response with settings
+            settings = (
+                "location=multi",
+                "guntimes=true", 
+                "newlocations=true",
+                "authentication=none",
+                "stream-mode=push",
+                "time-format=iso"
+            )
+            
+            # Send initial greeting with settings count
+            self.write_command("RaceDisplay", "Version 1.0 Level 2024.02", len(settings))
+            time.sleep(0.2)  # Delay after initial response
+            
+            # Send each setting with small delays between them
+            for setting in settings:
+                self.write_command(setting)
+                time.sleep(0.1)  # Small delay between settings
+
+            # Pause before sending protocol commands
+            time.sleep(0.3)
+
+            # Request event info and locations with delays
+            self.write_command("geteventinfo")
+            time.sleep(0.2)
+            
+            self.write_command("getlocations")
+            time.sleep(0.2)
+            
+            # Start the data feed
+            self.write_command("start")
+            time.sleep(0.2)
+
+            logger.info("Handshake complete, waiting for data or acknowledgments...")
+
+            # Process incoming data
+            while True:
+                line = self.read_command()
+                if not line:
+                    break
+
+                if line == 'ping':
+                    self.write_command("ack", "ping")
+                    continue
+
+                # Handle initialization acknowledgments
+                if line.startswith('ack~'):
+                    parts = line.split('~')
+                    if len(parts) >= 2:
+                        ack_type = parts[1]
+                        logger.info(f"Received acknowledgment: {ack_type}")
+                        continue
+
+                # Process timing data
+                processed_data = self.process_timing_data(line)
+                if processed_data:
+                    data_queue.put(processed_data)
+
+        except Exception as e:
+            logger.error(f"Error handling connection from {client_ip}: {e}")
+        finally:
+            logger.info(f"ChronoTrack client {client_ip} disconnected")
+
+    def process_timing_data(self, line):
+        """Process timing data in CT01_33 format"""
+        logger.info(f"Processing timing data: {line}")
+        
+        try:
+            parts = line.split(PROTOCOL_CONFIG['FIELD_SEPARATOR'])
+            
+            if len(parts) >= 8 and parts[0] == PROTOCOL_CONFIG['FORMAT_ID']:
+                data = {
+                    'format': parts[0],
+                    'sequence': parts[1],
+                    'location': parts[2],
+                    'bib': parts[3],
+                    'time': parts[4],
+                    'gator': parts[5],
+                    'tagcode': parts[6],
+                    'lap': parts[7],
+                    'raw_line': line
+                }
+                
+                logger.info(f"Parsed timing data: Bib {data['bib']}, Location {data['location']}, Time {data['time'].split('T')[1] if 'T' in data['time'] else data['time']}")
+                
+                # Skip guntime events
+                if data['bib'] == 'guntime':
+                    logger.info("Skipping guntime event")
+                    return None
+                    
+                # Store in database
+                if store_timing_read(data):
+                    return data
+                else:
+                    logger.error("Failed to store timing read")
+                    
+        except Exception as e:
+            logger.error(f"Error processing timing data: {e}")
+            logger.error(f"Line causing error: {line}")
+        
+        return None
+
+def start_tcp_server():
+    """Start the ChronoTrack TCP server"""
+    logger.info(f"Starting ChronoTrack TCP server on {PROTOCOL_CONFIG['HOST']}:{PROTOCOL_CONFIG['PORT']}")
+    
+    try:
+        server = socketserver.ThreadingTCPServer(
+            (PROTOCOL_CONFIG['HOST'], PROTOCOL_CONFIG['PORT']), 
+            TimingHandler
+        )
+        server.allow_reuse_address = True
+        logger.info(f"✅ TCP server listening on port {PROTOCOL_CONFIG['PORT']}")
+        server.serve_forever()
+    except Exception as e:
+        logger.error(f"TCP server error: {e}")
+        raise
+
+def process_data_queue():
+    """Process timing data from queue"""
+    logger.info("Starting data queue processor")
+    
+    while True:
+        try:
+            if not data_queue.empty():
+                data = data_queue.get(timeout=1)
+                logger.info(f"Processed timing data for bib {data.get('bib', 'unknown')}")
+                data_queue.task_done()
+            else:
+                time.sleep(0.1)
+        except queue.Empty:
+            continue
+        except Exception as e:
+            logger.error(f"Error processing data queue: {e}")
+
+class StatusHandler(BaseHTTPRequestHandler):
+    """HTTP handler for status API"""
+    
+    def do_GET(self):
+        """Handle GET requests"""
+        try:
+            if self.path == '/status':
+                self.send_status()
+            elif self.path == '/health':
+                self.send_health()
+            else:
+                self.send_error(404)
+        except Exception as e:
+            logger.error(f"Status API error: {e}")
+            self.send_error(500)
+    
+    def send_status(self):
+        """Send detailed status information"""
+        status = {
+            'service': 'timing-collector',
+            'status': 'running',
+            'tcp_port': PROTOCOL_CONFIG['PORT'],
+            'connections': connection_count,
+            'total_reads': total_reads_received,
+            'current_session': current_session_id,
+            'timestamp': datetime.now().isoformat(),
+            'database_connected': self.check_database()
+        }
+        
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps(status, indent=2).encode())
+    
+    def send_health(self):
+        """Send simple health check"""
+        health = {'status': 'healthy', 'timestamp': datetime.now().isoformat()}
+        
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps(health).encode())
+    
+    def check_database(self):
+        """Check database connectivity"""
+        conn = get_database_connection()
+        if conn:
+            conn.close()
+            return True
+        return False
+    
+    def log_message(self, format, *args):
+        """Suppress default HTTP logging"""
+        pass
+
+def start_status_api():
+    """Start the status API server"""
+    logger.info(f"Starting status API on {STATUS_API_CONFIG['HOST']}:{STATUS_API_CONFIG['PORT']}")
+    
+    try:
+        server = HTTPServer((STATUS_API_CONFIG['HOST'], STATUS_API_CONFIG['PORT']), StatusHandler)
+        logger.info(f"✅ Status API listening on port {STATUS_API_CONFIG['PORT']}")
+        server.serve_forever()
+    except Exception as e:
+        logger.error(f"Status API error: {e}")
+
+def main():
+    """Main service entry point"""
+    logger.info("🏁 Starting ChronoTrack Timing Collector Service")
+    
+    # Create initial timing session
+    create_timing_session("Automatic Session")
+    
+    # Start background threads
+    threads = []
+    
+    # Data queue processor
+    queue_thread = threading.Thread(target=process_data_queue, daemon=True)
+    queue_thread.start()
+    threads.append(queue_thread)
+    
+    # Status API server
+    status_thread = threading.Thread(target=start_status_api, daemon=True)
+    status_thread.start()
+    threads.append(status_thread)
+    
+    logger.info("🚀 All background services started")
+    
+    # Start TCP server (main thread)
+    try:
+        start_tcp_server()
+    except KeyboardInterrupt:
+        logger.info("Shutting down timing collector service")
+    except Exception as e:
+        logger.error(f"Service error: {e}")
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,643 @@
+from flask import Flask, render_template, request, jsonify, Response, send_from_directory
+from flask_cors import CORS
+from flask_session import Session
+import redis
+import os
+import json
+import time
+import random
+import hashlib
+import requests
+from datetime import datetime, timedelta
+import psycopg2
+import logging
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+from config import (
+    RANDOM_MESSAGES,
+    API_CONFIG,
+    PROTOCOL_CONFIG,
+    SERVER_CONFIG
+)
+from bs4 import BeautifulSoup
+import tinycss2
+from urllib.parse import urljoin, urlparse
+
+app = Flask(__name__, static_folder='frontend/dist', static_url_path='/static')
+CORS(app)
+
+# Configure Redis session
+app.config['SESSION_TYPE'] = 'redis'
+app.config['SESSION_REDIS'] = redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'))
+app.config['SESSION_PERMANENT'] = False
+app.config['PERMANENT_SESSION_LIFETIME'] = 3600  # 1 hour
+Session(app)
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Global variables
+roster_data = {}
+current_event_id = None
+race_name = None
+
+# Database configuration for timing data
+DB_CONFIG = {
+    'host': os.environ.get('DB_HOST', 'localhost'),
+    'port': int(os.environ.get('DB_PORT', 5432)),
+    'database': os.environ.get('DB_NAME', 'raw_tag_data'),
+    'user': os.environ.get('DB_USER', 'race_timing_user'),
+    'password': os.environ.get('DB_PASSWORD', 'secure_db_password_change_me')
+}
+
+# Track progress while loading roster data
+login_progress = {
+    'total_entries': 0,
+    'loaded_entries': 0,
+    'complete': False
+}
+
+# Directories for saved templates and uploaded images
+TEMPLATE_DIR = os.path.join(app.root_path, 'saved_templates')
+UPLOAD_DIR = os.path.join(app.static_folder, 'uploads')
+DATA_DIR = os.path.join(app.root_path, 'data')
+os.makedirs(TEMPLATE_DIR, exist_ok=True)
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(DATA_DIR, exist_ok=True)
+
+def get_db_connection():
+    """Get a connection to the timing database"""
+    try:
+        return psycopg2.connect(**DB_CONFIG)
+    except Exception as e:
+        logger.error(f"Failed to connect to database: {e}")
+        logger.error(f"DB_CONFIG: {DB_CONFIG}")
+        return None
+
+def get_latest_timing_read():
+    """Get the most recent timing read from the database"""
+    conn = get_db_connection()
+    if not conn:
+        return None
+    
+    try:
+        with conn.cursor() as cursor:
+            # Get the most recent timing read including raw_data
+            cursor.execute("""
+                SELECT tag_code, location_name, read_time, read_timestamp, 
+                       session_id, sequence_number, raw_data
+                FROM timing_reads 
+                ORDER BY read_timestamp DESC 
+                LIMIT 1
+            """)
+            
+            result = cursor.fetchone()
+            if result:
+                tag_code, location_name, read_time, read_timestamp, session_id, sequence_number, raw_data = result
+                
+                # Try to extract bib from raw_data JSON
+                bib = None
+                if raw_data:
+                    try:
+                        import json
+                        parsed_data = json.loads(raw_data) if isinstance(raw_data, str) else raw_data
+                        bib_from_raw = parsed_data.get('bib')
+                        
+                        # Only use bib if it's a valid number (not test data like "newlocation")
+                        if bib_from_raw and bib_from_raw.isdigit():
+                            bib = bib_from_raw
+                    except Exception as e:
+                        logger.warning(f"Could not parse raw_data: {e}")
+                
+                # Fallback: try to convert tag_code to bib number if no valid bib in raw_data
+                if not bib and tag_code != '000000':
+                    # For hex tag codes, this won't work well, but try anyway
+                    try:
+                        bib = str(int(tag_code, 16)) if len(tag_code) <= 8 else tag_code.lstrip('0')
+                    except ValueError:
+                        bib = tag_code.lstrip('0') if tag_code.lstrip('0') else None
+                
+                return {
+                    'tag_code': tag_code,
+                    'bib': bib,
+                    'location': location_name,
+                    'read_time': str(read_time),
+                    'read_timestamp': read_timestamp.isoformat(),
+                    'session_id': session_id,
+                    'sequence_number': sequence_number,
+                    'raw_data': raw_data
+                }
+    except Exception as e:
+        logger.error(f"Error getting latest timing read: {e}")
+    finally:
+        conn.close()
+    
+    return None
+
+def get_runner_from_timing_data(timing_data):
+    """Convert timing data to runner display data"""
+    if not timing_data or not timing_data.get('bib'):
+        return None
+    
+    bib = timing_data['bib']
+    
+    # Look up runner in roster data
+    if bib in roster_data:
+        runner_data = roster_data[bib]
+        return {
+            'name': runner_data['name'],
+            'first_name': runner_data['first_name'],
+            'last_name': runner_data['last_name'],
+            'age': runner_data['age'],
+            'gender': runner_data['gender'],
+            'city': runner_data['city'],
+            'state': runner_data['state'],
+            'country': runner_data['country'],
+            'division': runner_data['division'],
+            'race_name': runner_data['race_name'],
+            'reg_choice': runner_data['reg_choice'],
+            'wave': runner_data['wave'],
+            'team_name': runner_data['team_name'],
+            'message': random.choice(load_messages()),
+            'timestamp': timing_data['read_time'],
+            'location': timing_data['location'],
+            'bib': bib,
+            'tag_code': timing_data['tag_code']
+        }
+    else:
+        # No fallback data - if bib is not in roster, return None
+        logger.warning(f"Bib {bib} not found in roster data (roster has {len(roster_data)} entries)")
+        return None
+
+# Add message management functions
+def load_messages():
+    """Load messages from the data directory"""
+    messages_file = os.path.join(DATA_DIR, 'messages.json')
+    if os.path.exists(messages_file):
+        try:
+            with open(messages_file, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Error loading messages: {e}")
+    return RANDOM_MESSAGES.copy()
+
+def save_messages(messages):
+    """Save messages to the data directory"""
+    messages_file = os.path.join(DATA_DIR, 'messages.json')
+    try:
+        with open(messages_file, 'w') as f:
+            json.dump(messages, f)
+        return True
+    except Exception as e:
+        logger.error(f"Error saving messages: {e}")
+        return False
+
+def encode_password(password):
+    """Encode password using SHA-1"""
+    return hashlib.sha1(password.encode('utf-8')).hexdigest()
+
+def fetch_roster_page(event_id, credentials, page=1):
+    """Fetch a single page of roster data"""
+    url = f"{API_CONFIG['BASE_URL']}/event/{event_id}/entry"
+    
+    user_id = credentials.get('user_id') or API_CONFIG.get('DEFAULT_USER_ID', '')
+    password = credentials.get('user_pass') or API_CONFIG.get('DEFAULT_PASSWORD', '')
+    
+    if len(password) != 40:
+        encoded_password = encode_password(password)
+    else:
+        encoded_password = password
+    
+    params = {
+        'format': API_CONFIG['FORMAT'],
+        'client_id': API_CONFIG['CLIENT_ID'],
+        'user_id': user_id,
+        'user_pass': encoded_password,
+        'page': page,
+        'size': 100,
+        'include_test_entries': 'true',
+        'elide_json': 'false'
+    }
+    
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        if not isinstance(data, dict) or 'event_entry' not in data:
+            return None, None
+            
+        return data, response.headers
+        
+    except Exception as e:
+        logger.error(f"Error fetching roster page {page}: {e}")
+        return None, None
+
+def fetch_complete_roster(event_id, credentials):
+    """Fetch all pages of roster data"""
+    global roster_data, race_name, login_progress
+    roster_data = {}
+
+    login_progress = {
+        'total_entries': 0,
+        'loaded_entries': 0,
+        'complete': False
+    }
+
+    data, headers = fetch_roster_page(event_id, credentials, page=1)
+    if not data:
+        return False
+    
+    total_pages = int(headers.get('X-Ctlive-Page-Count', 1))
+    total_rows = int(headers.get('X-Ctlive-Row-Count', 0))
+    login_progress['total_entries'] = total_rows
+    
+    # Process all pages
+    for page in range(1, total_pages + 1):
+        if page > 1:
+            data, _ = fetch_roster_page(event_id, credentials, page)
+            if not data:
+                continue
+        
+        for entry in data.get('event_entry', []):
+            try:
+                roster_data[entry['bib']] = {
+                    'name': entry.get('entry_name', ''),
+                    'first_name': entry.get('first_name', ''),
+                    'last_name': entry.get('last_name', ''),
+                    'age': entry.get('age', ''),
+                    'gender': entry.get('gender', ''),
+                    'city': entry.get('city', ''),
+                    'state': entry.get('state', ''),
+                    'country': entry.get('country', ''),
+                    'division': entry.get('division_name', ''),
+                    'race_name': entry.get('race_name', ''),
+                    'reg_choice': entry.get('reg_choice', ''),
+                    'wave': entry.get('wave', ''),
+                    'team_name': entry.get('team_name', '')
+                }
+                login_progress['loaded_entries'] += 1
+            except Exception as e:
+                logger.error(f"Error processing entry: {e}")
+                continue
+    
+    login_progress['complete'] = True
+    race_name = data.get('event_entry', [{}])[0].get('race_name', 'Unknown Race')
+    return True
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    try:
+        if request.is_json:
+            data = request.get_json()
+            password = data.get('password')
+            user_id = data.get('user_id')
+            event_id = data.get('event_id')
+        else:
+            password = request.form['password']
+            user_id = request.form['user_id']
+            event_id = request.form['event_id']
+        
+        if len(password) == 40 and all(c in '0123456789abcdef' for c in password.lower()):
+            encoded_password = password
+        else:
+            encoded_password = encode_password(password)
+            
+        credentials = {
+            'user_id': user_id,
+            'user_pass': encoded_password,
+            'event_id': event_id
+        }
+        
+        global current_event_id
+        current_event_id = credentials['event_id']
+        
+        response = {
+            "success": False,
+            "status": "Authenticating...",
+            "stage": 1,
+            "total_stages": 3
+        }
+        
+        if fetch_complete_roster(current_event_id, credentials):
+            response.update({
+                "success": True,
+                "status": "Ready to display timing data",
+                "stage": 3,
+                "race_name": race_name,
+                "runners_loaded": len(roster_data),
+                "credentials_valid": True,
+                "display_active": True
+            })
+        else:
+            response.update({
+                "error": "Failed to fetch roster",
+                "stage": 2
+            })
+            
+    except Exception as e:
+        response = {
+            "success": False,
+            "error": f"Login failed: {str(e)}",
+            "stage": 1
+        }
+    
+    return jsonify(response)
+
+@app.route('/api/login-progress')
+def get_login_progress():
+    return jsonify(login_progress)
+
+@app.route('/api/current-runner')
+def get_current_runner():
+    """Return current runner data from the database - ONLY if both timing data AND roster data exist"""
+    try:
+        # Check if roster is loaded first
+        if not roster_data:
+            logger.info("No roster data loaded - returning empty response")
+            return jsonify({})
+        
+        # Get latest timing data from database
+        timing_data = get_latest_timing_read()
+        if not timing_data:
+            logger.info("No timing data available - returning empty response")
+            return jsonify({})
+        
+        bib = timing_data.get('bib')
+        if not bib:
+            logger.info("No bib number in timing data - returning empty response")
+            return jsonify({})
+            
+        # Only return data if the bib exists in the roster
+        if bib not in roster_data:
+            logger.info(f"Bib {bib} not found in roster (roster has {len(roster_data)} entries) - returning empty response")
+            return jsonify({})
+        
+        # We have both timing data and matching roster data - return full runner info
+        runner_data = get_runner_from_timing_data(timing_data)
+        if runner_data:
+            logger.info(f"Returning runner data for {runner_data.get('name', 'Unknown')} (bib {bib})")
+            return jsonify(runner_data)
+        
+        return jsonify({})
+    except Exception as e:
+        logger.error(f"Error getting current runner: {e}")
+        return jsonify({})
+
+@app.route('/api/debug/timing')
+def debug_timing():
+    """Debug endpoint to show timing data and mapping"""
+    try:
+        timing_data = get_latest_timing_read()
+        roster_count = len(roster_data)
+        
+        debug_info = {
+            'latest_timing_data': timing_data,
+            'roster_loaded': roster_count > 0,
+            'roster_count': roster_count,
+            'sample_roster_bibs': list(roster_data.keys())[:10] if roster_data else [],
+            'timing_database_accessible': timing_data is not None
+        }
+        
+        if timing_data and timing_data.get('bib'):
+            bib = timing_data['bib']
+            debug_info['bib_in_roster'] = bib in roster_data
+            if bib in roster_data:
+                debug_info['roster_entry'] = roster_data[bib]
+        
+        return jsonify(debug_info)
+    except Exception as e:
+        logger.error(f"Error in debug endpoint: {e}")
+        return jsonify({'error': str(e)})
+
+@app.route('/api/debug/add-test-runner', methods=['POST'])
+def add_test_runner():
+    """Add test runner data for demo purposes"""
+    global roster_data
+    try:
+        # Add some test runners that match current timing data
+        test_runners = {
+            '6666': {
+                'name': 'John Smith',
+                'first_name': 'John',
+                'last_name': 'Smith',
+                'age': '32',
+                'gender': 'M',
+                'city': 'Chicago',
+                'state': 'IL',
+                'country': 'USA',
+                'division': 'Men 30-39',
+                'race_name': 'Test Race',
+                'reg_choice': 'Individual',
+                'wave': '1',
+                'team_name': ''
+            },
+            '9999': {
+                'name': 'Sarah Johnson',
+                'first_name': 'Sarah',
+                'last_name': 'Johnson',
+                'age': '28',
+                'gender': 'F',
+                'city': 'Austin',
+                'state': 'TX',
+                'country': 'USA',
+                'division': 'Women 25-29',
+                'race_name': 'Test Race',
+                'reg_choice': 'Individual',
+                'wave': '1',
+                'team_name': ''
+            },
+            '1234': {
+                'name': 'Mike Wilson',
+                'first_name': 'Mike',
+                'last_name': 'Wilson',
+                'age': '45',
+                'gender': 'M',
+                'city': 'Denver',
+                'state': 'CO',
+                'country': 'USA',
+                'division': 'Men 40-49',
+                'race_name': 'Test Race',
+                'reg_choice': 'Individual',
+                'wave': '2',
+                'team_name': ''
+            }
+        }
+        
+        roster_data.update(test_runners)
+        
+        return jsonify({
+            'success': True,
+            'message': 'Test runners added',
+            'roster_count': len(roster_data),
+            'test_bibs': list(test_runners.keys())
+        })
+        
+    except Exception as e:
+        logger.error(f"Error adding test runners: {e}")
+        return jsonify({'error': str(e)}), 500
+
+# Add a Redis-based real-time update mechanism
+@app.route('/stream')
+def stream():
+    """Server-sent events for real-time updates"""
+    def generate():
+        redis_client = redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'))
+        last_timestamp = None
+        
+        while True:
+            try:
+                timing_data = get_latest_timing_read()
+                if timing_data and timing_data.get('read_timestamp') != last_timestamp:
+                    runner_data = get_runner_from_timing_data(timing_data)
+                    if runner_data:
+                        last_timestamp = timing_data.get('read_timestamp')
+                        yield f"data: {json.dumps(runner_data)}\n\n"
+                
+                # Send keepalive if no new data
+                yield f"data: {json.dumps({'keepalive': True})}\n\n"
+                time.sleep(1)  # Check every second
+                
+            except Exception as e:
+                logger.error(f"Error in stream: {e}")
+                yield f"data: {json.dumps({'keepalive': True})}\n\n"
+                time.sleep(5)
+    
+    response = Response(generate(), mimetype='text/event-stream')
+    response.headers['Cache-Control'] = 'no-cache'
+    response.headers['Connection'] = 'keep-alive'
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    return response
+
+# Keep all the other existing routes (messages, templates, etc.)
+@app.route('/api/messages', methods=['GET', 'POST'])
+def manage_messages():
+    if request.method == 'GET':
+        return jsonify(load_messages())
+        
+    try:
+        data = request.get_json()
+        if not data or 'text' not in data:
+            return jsonify({'error': 'Missing text field'}), 400
+            
+        messages = load_messages()
+        if data['text'] not in messages:
+            messages.append(data['text'])
+            if save_messages(messages):
+                return jsonify(messages)
+            else:
+                return jsonify({'error': 'Failed to save messages'}), 500
+        return jsonify(messages)
+        
+    except Exception as e:
+        logger.error(f"Error in manage_messages: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/messages/<int:index>', methods=['DELETE'])
+def delete_message(index):
+    try:
+        messages = load_messages()
+        if 0 <= index < len(messages):
+            messages.pop(index)
+            if save_messages(messages):
+                return jsonify(messages)
+            else:
+                return jsonify({'error': 'Failed to save messages'}), 500
+        return jsonify({'error': 'Invalid index'}), 400
+    except Exception as e:
+        logger.error(f"Error in delete_message: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/templates', methods=['GET', 'POST'])
+def manage_templates():
+    if request.method == 'GET':
+        templates = []
+        for filename in os.listdir(TEMPLATE_DIR):
+            if filename.endswith('.html'):
+                templates.append(filename[:-5])  # Remove .html extension
+        return jsonify(templates)
+    
+    try:
+        data = request.get_json()
+        name = data.get('name')
+        content = data.get('content')
+        
+        if not name or not content:
+            return jsonify({'error': 'Missing name or content'}), 400
+        
+        filepath = os.path.join(TEMPLATE_DIR, f"{name}.html")
+        with open(filepath, 'w') as f:
+            f.write(content)
+        
+        return jsonify({'success': True, 'name': name})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/templates/<name>', methods=['GET', 'DELETE'])
+def get_template(name):
+    if request.method == 'DELETE':
+        try:
+            filepath = os.path.join(TEMPLATE_DIR, f"{name}.html")
+            if os.path.exists(filepath):
+                os.remove(filepath)
+                return jsonify({'success': True})
+            return jsonify({'error': 'Template not found'}), 404
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+    
+    try:
+        filepath = os.path.join(TEMPLATE_DIR, f"{name}.html")
+        if os.path.exists(filepath):
+            with open(filepath, 'r') as f:
+                content = f.read()
+            return jsonify({'content': content})
+        return jsonify({'error': 'Template not found'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/display-settings', methods=['GET', 'POST'])
+def display_settings():
+    if request.method == 'POST':
+        # Handle display settings updates
+        return jsonify({'success': True})
+    
+    return jsonify({
+        'displayDuration': 5000,
+        'transitions': True
+    })
+
+if __name__ == '__main__':
+    app.run(debug=False, host='0.0.0.0', port=5001) @app.route('/api/health')
+def health_check():
+    """Health check endpoint"""
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        conn.close()
+        db_connected = True
+    except:
+        db_connected = False
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat(),
+        'version': '2.0',
+        'database_connected': db_connected
+    })
+
+@app.route('/')
+def serve_react():
+    return send_from_directory(app.static_folder, 'index.html')
+
+@app.route('/<path:path>')
+def serve_react_routes(path):
+    # Don't serve React for API endpoints
+    if path.startswith('api/'):
+        return jsonify({'error': 'API endpoint not found'}), 404
+    
+    file_path = os.path.join(app.static_folder, path)
+    if os.path.exists(file_path):
+        return send_from_directory(app.static_folder, path)
+    return send_from_directory(app.static_folder, 'index.html')
+
