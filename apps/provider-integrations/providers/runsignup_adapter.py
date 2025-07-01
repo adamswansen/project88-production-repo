@@ -223,14 +223,183 @@ class RunSignUpAdapter(BaseProviderAdapter):
         
         return response.json()
     
+    def store_race(self, race_data: Dict, db_connection) -> int:
+        """Store race data in runsignup_races table"""
+        from datetime import datetime
+        
+        cursor = db_connection.cursor()
+        
+        # Extract address information
+        address = race_data.get('address', {})
+        
+        # Insert or update race
+        cursor.execute("""
+            INSERT OR REPLACE INTO runsignup_races (
+                race_id, name, last_date, last_end_date, next_date, next_end_date,
+                is_draft_race, is_private_race, is_registration_open, created, 
+                last_modified, description, url, external_race_url, external_results_url,
+                fb_page_id, fb_event_id, street, street2, city, state, zipcode,
+                country_code, timezone, logo_url, real_time_notifications_enabled,
+                fetched_date, credentials_used, timing_partner_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            race_data.get('race_id'),
+            race_data.get('name'),
+            race_data.get('last_date'),
+            race_data.get('last_end_date'),
+            race_data.get('next_date'),
+            race_data.get('next_end_date'),
+            race_data.get('is_draft_race'),
+            race_data.get('is_private_race'),
+            race_data.get('is_registration_open'),
+            race_data.get('created'),
+            race_data.get('last_modified'),
+            race_data.get('description'),
+            race_data.get('url'),
+            race_data.get('external_race_url'),
+            race_data.get('external_results_url'),
+            race_data.get('fb_page_id'),
+            race_data.get('fb_event_id'),
+            address.get('street'),
+            address.get('street2'),
+            address.get('city'),
+            address.get('state'),
+            address.get('zipcode'),
+            address.get('country_code'),
+            race_data.get('timezone'),
+            race_data.get('logo_url'),
+            race_data.get('real_time_notifications_enabled'),
+            datetime.now().isoformat(),
+            self.api_key,
+            self.timing_partner_id
+        ))
+        
+        return race_data.get('race_id')
+    
+    def store_event(self, event_data: Dict, race_id: int, db_connection) -> int:
+        """Store event data in runsignup_events table"""
+        from datetime import datetime
+        
+        cursor = db_connection.cursor()
+        
+        cursor.execute("""
+            INSERT OR REPLACE INTO runsignup_events (
+                event_id, race_id, name, details, start_time, end_time,
+                age_calc_base_date, registration_opens, event_type, distance,
+                volunteer, require_dob, require_phone, giveaway,
+                fetched_date, credentials_used, timing_partner_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            event_data.get('event_id'),
+            race_id,
+            event_data.get('name'),
+            event_data.get('details'),
+            event_data.get('start_time'),
+            event_data.get('end_time'),
+            event_data.get('age_calc_base_date'),
+            event_data.get('registration_opens'),
+            event_data.get('event_type'),
+            event_data.get('distance'),
+            event_data.get('volunteer'),
+            event_data.get('require_dob'),
+            event_data.get('require_phone'),
+            event_data.get('giveaway'),
+            datetime.now().isoformat(),
+            self.api_key,
+            self.timing_partner_id
+        ))
+        
+        return event_data.get('event_id')
+    
+    def store_participant(self, participant_data: Dict, race_id: int, event_id: int, db_connection):
+        """Store participant data in runsignup_participants table"""
+        from datetime import datetime
+        
+        cursor = db_connection.cursor()
+        
+        user_data = participant_data.get('user', {})
+        
+        cursor.execute("""
+            INSERT OR REPLACE INTO runsignup_participants (
+                race_id, event_id, registration_id, user_id, first_name, middle_name,
+                last_name, email, street, city, state, zipcode, country_code,
+                dob, gender, phone, profile_image_url, rsu_transaction_id,
+                transaction_id, bib_num, chip_num, age, registration_date,
+                team_id, team_name, team_type_id, team_type, team_gender,
+                team_bib_num, last_modified, imported, race_fee,
+                offline_payment_amount, processing_fee, processing_fee_paid_by_user,
+                processing_fee_paid_by_race, partner_fee, affiliate_profit,
+                extra_fees, amount_paid, usatf_discount_amount_in_cents,
+                usatf_discount_additional_field, giveaway, giveaway_option_id,
+                fundraiser_id, fundraiser_charity_id, fundraiser_charity_name,
+                team_fundraiser_id, multi_race_bundle_id, multi_race_bundle,
+                signed_waiver_details, fetched_date, credentials_used, timing_partner_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            race_id,
+            event_id,
+            participant_data.get('registration_id'),
+            user_data.get('user_id'),
+            user_data.get('first_name'),
+            user_data.get('middle_name'),
+            user_data.get('last_name'),
+            user_data.get('email'),
+            user_data.get('address', {}).get('street'),
+            user_data.get('address', {}).get('city'),
+            user_data.get('address', {}).get('state'),
+            user_data.get('address', {}).get('zipcode'),
+            user_data.get('address', {}).get('country_code'),
+            user_data.get('dob'),
+            user_data.get('gender'),
+            user_data.get('phone'),
+            user_data.get('profile_image_url'),
+            participant_data.get('rsu_transaction_id'),
+            participant_data.get('transaction_id'),
+            participant_data.get('bib_num'),
+            participant_data.get('chip_num'),
+            participant_data.get('age'),
+            participant_data.get('registration_date'),
+            participant_data.get('team_id'),
+            participant_data.get('team_name'),
+            participant_data.get('team_type_id'),
+            participant_data.get('team_type'),
+            participant_data.get('team_gender'),
+            participant_data.get('team_bib_num'),
+            participant_data.get('last_modified'),
+            participant_data.get('imported'),
+            participant_data.get('race_fee'),
+            participant_data.get('offline_payment_amount'),
+            participant_data.get('processing_fee'),
+            participant_data.get('processing_fee_paid_by_user'),
+            participant_data.get('processing_fee_paid_by_race'),
+            participant_data.get('partner_fee'),
+            participant_data.get('affiliate_profit'),
+            participant_data.get('extra_fees'),
+            participant_data.get('amount_paid'),
+            participant_data.get('usatf_discount_amount_in_cents'),
+            participant_data.get('usatf_discount_additional_field'),
+            participant_data.get('giveaway'),
+            participant_data.get('giveaway_option_id'),
+            participant_data.get('fundraiser_id'),
+            participant_data.get('fundraiser_charity_id'),
+            participant_data.get('fundraiser_charity_name'),
+            participant_data.get('team_fundraiser_id'),
+            participant_data.get('multi_race_bundle_id'),
+            participant_data.get('multi_race_bundle'),
+            participant_data.get('signed_waiver_details'),
+            datetime.now().isoformat(),
+            self.api_key,
+            self.timing_partner_id
+        ))
+    
     def _store_event(self, event: ProviderEvent):
-        """Store event in RunSignUp events table"""
-        # This would be implemented by the sync worker
-        # For now, just log that we would store it
-        self.logger.debug(f"Would store RunSignUp event: {event.provider_event_id} - {event.event_name}")
+        """Store event in RunSignUp events table (legacy method for base class)"""
+        # This is called by the base class but we handle storage differently
+        # The actual storage is done via store_race, store_event, store_participant methods
+        pass
     
     def _store_participant(self, participant: ProviderParticipant):
-        """Store participant in RunSignUp participants table"""
-        # This would be implemented by the sync worker
-        # For now, just log that we would store it
-        self.logger.debug(f"Would store RunSignUp participant: {participant.provider_participant_id} - {participant.first_name} {participant.last_name}") 
+        """Store participant in RunSignUp participants table (legacy method for base class)"""
+        # This is called by the base class but we handle storage differently
+        # The actual storage is done via store_race, store_event, store_participant methods
+        pass 
