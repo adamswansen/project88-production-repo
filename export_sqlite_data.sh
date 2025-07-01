@@ -8,7 +8,7 @@
 set -e  # Exit on any error
 
 # Configuration
-SQLITE_DB_PATH="/Users/adamswansen/Desktop/Project88/race_results.db"
+SQLITE_DB_PATH="/Users/adamswansen/Desktop/race_results.db"
 EXPORT_DIR="/Users/adamswansen/Desktop/Project88/migration_exports"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
