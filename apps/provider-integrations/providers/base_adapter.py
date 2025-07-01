@@ -116,7 +116,7 @@ class BaseProviderAdapter(ABC):
         retry_strategy = Retry(
             total=3,
             status_forcelist=[429, 500, 502, 503, 504],
-            method_whitelist=["HEAD", "GET", "OPTIONS"],
+            allowed_methods=["HEAD", "GET", "OPTIONS"],
             backoff_factor=1
         )
         adapter = HTTPAdapter(max_retries=retry_strategy)
@@ -323,13 +323,20 @@ class BaseProviderAdapter(ABC):
             
         if formats is None:
             formats = [
+                # ISO formats
                 "%Y-%m-%d %H:%M:%S",
                 "%Y-%m-%dT%H:%M:%S",
                 "%Y-%m-%dT%H:%M:%SZ",
                 "%Y-%m-%dT%H:%M:%S.%fZ",
                 "%Y-%m-%d",
-                "%m/%d/%Y",
-                "%m/%d/%Y %H:%M:%S"
+                # RunSignUp formats - try no leading zeros first (most common)
+                "%m/%d/%Y %H:%M",      # "9/28/2025 09:00" or "09/28/2025 09:00"
+                "%m/%d/%Y %H:%M:%S",   # "9/28/2025 09:00:00"
+                "%m/%d/%Y",            # "9/28/2025"
+                # Additional common US date formats
+                "%m-%d-%Y %H:%M:%S",
+                "%m-%d-%Y %H:%M",
+                "%m-%d-%Y",
             ]
         
         for fmt in formats:

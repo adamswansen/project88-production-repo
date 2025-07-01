@@ -34,7 +34,8 @@ class RunSignUpAdapter(BaseProviderAdapter):
         try:
             # Test with a simple API call
             response = self._make_runsignup_request("/races", {"results_per_page": 1})
-            return response.get('success', False)
+            # RunSignUp doesn't return a 'success' field - check if we got races data
+            return 'races' in response and isinstance(response['races'], list)
         except Exception as e:
             self.logger.error(f"RunSignUp authentication failed: {e}")
             return False
@@ -57,15 +58,16 @@ class RunSignUpAdapter(BaseProviderAdapter):
             
             response = self._make_runsignup_request("/races", params)
             
-            if not response.get('success'):
+            if 'races' not in response:
                 break
                 
             races = response.get('races', [])
             if not races:
                 break
             
-            for race_data in races:
+            for race_entry in races:
                 # Get events for this race
+                race_data = race_entry['race']  # Race data is nested under 'race' key
                 race_events = self._get_race_events(race_data['race_id'])
                 events.extend(race_events)
             
@@ -95,7 +97,7 @@ class RunSignUpAdapter(BaseProviderAdapter):
             
             response = self._make_runsignup_request("/race/participants", params)
             
-            if not response.get('success'):
+            if 'participants' not in response:
                 break
                 
             participant_data = response.get('participants', [])
@@ -119,7 +121,7 @@ class RunSignUpAdapter(BaseProviderAdapter):
         """Get events for a specific race"""
         response = self._make_runsignup_request(f"/race/{race_id}", {"include_event_days": "T"})
         
-        if not response.get('success'):
+        if 'race' not in response:
             return []
         
         race = response.get('race', {})
