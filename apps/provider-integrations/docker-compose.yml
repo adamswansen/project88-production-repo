@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  provider-sync:
+    build: .
+    container_name: project88-provider-sync
+    restart: unless-stopped
+    environment:
+      - DB_HOST=${DB_HOST:-localhost}
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_NAME=${DB_NAME:-project88_myappdb}
+      - DB_USER=${DB_USER:-project88_myappuser}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./logs:/var/log/project88
+      - /etc/localtime:/etc/localtime:ro
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import psycopg2; psycopg2.connect(host='${DB_HOST}', dbname='${DB_NAME}', user='${DB_USER}', password='${DB_PASSWORD}')"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      - db
+    networks:
+      - project88-network
+
+  # Optional: Include if you want to run PostgreSQL in Docker too
+  db:
+    image: postgres:15
+    container_name: project88-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${DB_NAME:-project88_myappdb}
+      - POSTGRES_USER=${DB_USER:-project88_myappuser}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backups:/backups
+    ports:
+      - "5432:5432"
+    networks:
+      - project88-network
+
+networks:
+  project88-network:
+    driver: bridge
+
+volumes:
+  postgres_data: 
