@@ -45,7 +45,6 @@ class RunSignUpProductionSync:
             }
         else:
             self.db_config = db_config
-            
         self.total_races = 0
         self.total_events = 0
         self.total_participants = 0
@@ -122,35 +121,23 @@ class RunSignUpProductionSync:
             
             logger.info(f"✅ Authentication successful for timing partner {timing_partner_id}")
             
-            # Get events using paginated method (this also gives us the races)
-            provider_events = adapter.get_events()
-            if not provider_events:
-                error_msg = f"No events found for timing partner {timing_partner_id}"
+            # Get races
+            response = adapter._make_runsignup_request("/races", {"results_per_page": 1000})
+            if 'races' not in response:
+                error_msg = f"No races found for timing partner {timing_partner_id}"
                 logger.warning(error_msg)
                 return results
             
-            # Group events by race_id to process races efficiently
-            races_with_events = {}
-            for event in provider_events:
-                race_data = event.raw_data.get('race', {})
-                race_id = race_data.get('race_id')
-                if race_id:
-                    if race_id not in races_with_events:
-                        races_with_events[race_id] = {
-                            'race': race_data,
-                            'events': []
-                        }
-                    races_with_events[race_id]['events'].append(event.raw_data.get('event', {}))
-            
-            logger.info(f"Found {len(races_with_events)} races with {len(provider_events)} events for timing partner {timing_partner_id}")
+            races = response['races']
+            logger.info(f"Found {len(races)} races for timing partner {timing_partner_id}")
             
             # Connect to database
             conn = self.get_connection()
             
             try:
-                for race_id, race_with_events in races_with_events.items():
-                    race_data = race_with_events['race']
-                    events = race_with_events['events']
+                for race_entry in races:
+                    race_data = race_entry['race']
+                    race_id = race_data['race_id']
                     
                     try:
                         # Store race
@@ -158,27 +145,38 @@ class RunSignUpProductionSync:
                         results['races'] += 1
                         logger.debug(f"Stored race {race_id}: {race_data.get('name')}")
                         
-                        # Process pre-fetched events (no additional API call needed)
-                        for event_data in events:
-                            event_id = event_data['event_id']
+                        # Get detailed race info with events
+                        race_details = adapter._make_runsignup_request(f"/race/{race_id}", {"include_event_days": "T"})
+                        
+                        if 'race' in race_details:
+                            race_info = race_details['race']
+                            events = race_info.get('events', [])
                             
-                            try:
-                                # Store event
-                                adapter.store_event(event_data, race_id, conn)
-                                results['events'] += 1
-                                logger.debug(f"Stored event {event_id}: {event_data.get('name')}")
+                            for event_data in events:
+                                event_id = event_data['event_id']
                                 
-                                # Get participants for this specific event using paginated method
                                 try:
-                                    # Use the adapter's paginated get_participants method to get ALL participants
-                                    provider_participants = adapter.get_participants(race_id, str(event_id))
-                                    participant_count = len(provider_participants)
+                                    # Store event
+                                    adapter.store_event(event_data, race_id, conn)
+                                    results['events'] += 1
+                                    logger.debug(f"Stored event {event_id}: {event_data.get('name')}")
                                     
-                                    if provider_participants:
-                                        for provider_participant in provider_participants:
+                                    # Get participants for this event
+                                    participants_response = adapter._make_runsignup_request(
+                                        "/race/participants", 
+                                        {
+                                            "event_id": event_id,
+                                            "results_per_page": 1000,
+                                            "include_individual_info": "T"
+                                        }
+                                    )
+                                    
+                                    if 'participants' in participants_response:
+                                        participants = participants_response['participants']
+                                        participant_count = len(participants)
+                                        
+                                        for participant_data in participants:
                                             try:
-                                                # Extract raw data for direct storage
-                                                participant_data = provider_participant.raw_data
                                                 adapter.store_participant(participant_data, race_id, event_id, conn)
                                                 results['participants'] += 1
                                             except Exception as e:
@@ -186,27 +184,18 @@ class RunSignUpProductionSync:
                                                 logger.error(error_msg)
                                                 results['errors'].append(error_msg)
                                         
+                                        # Log sync for this event
+                                        self.log_sync_history(event_id, participant_count, 'success')
                                         logger.info(f"✅ Synced {participant_count} participants for event {event_id}")
                                     else:
-                                        logger.debug(f"No participants found for event {event_id}")
+                                        logger.info(f"No participants found for event {event_id}")
+                                        self.log_sync_history(event_id, 0, 'success', 'No participants found')
                                 
                                 except Exception as e:
-                                    error_msg = f"Error getting participants for event {event_id}: {e}"
+                                    error_msg = f"Error processing event {event_id}: {e}"
                                     logger.error(error_msg)
                                     results['errors'].append(error_msg)
-                            
-                            except Exception as e:
-                                error_msg = f"Error storing event {event_id}: {e}"
-                                logger.error(error_msg)
-                                results['errors'].append(error_msg)
-                        
-                        # Get and log participant counts summary for the race
-                        try:
-                            participant_counts = adapter.get_participant_counts(race_id)
-                            if participant_counts:
-                                logger.debug(f"Participant counts for race {race_id}: {participant_counts}")
-                        except Exception as e:
-                            logger.debug(f"Could not get participant counts for race {race_id}: {e}")
+                                    self.log_sync_history(event_id, 0, 'failed', str(e))
                     
                     except Exception as e:
                         error_msg = f"Error processing race {race_id}: {e}"
