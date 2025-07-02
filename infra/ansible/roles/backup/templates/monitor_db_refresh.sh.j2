@@ -1,0 +1,273 @@
+#!/bin/bash
+
+# Project88Hub Database Refresh Monitoring Script
+# Monitors the health and status of database refresh operations
+
+set -euo pipefail
+
+# Configuration
+LOG_FILE="/var/log/project88/db_refresh.log"
+STATUS_FILE="/var/log/project88/db_refresh_status.json"
+ALERT_EMAIL="{{ vault_alert_email | default('admin@project88hub.com') }}"
+MAX_REFRESH_TIME=1800  # 30 minutes
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a /var/log/project88/db_monitor.log
+}
+
+check_service_status() {
+    log "🔍 Checking database refresh service status..."
+    
+    if systemctl is-active --quiet project88-db-refresh.timer; then
+        echo -e "${GREEN}✅ Database refresh timer is active${NC}"
+    else
+        echo -e "${RED}❌ Database refresh timer is not active${NC}"
+        return 1
+    fi
+    
+    if systemctl is-enabled --quiet project88-db-refresh.timer; then
+        echo -e "${GREEN}✅ Database refresh timer is enabled${NC}"
+    else
+        echo -e "${YELLOW}⚠️ Database refresh timer is not enabled${NC}"
+    fi
+}
+
+check_last_refresh() {
+    log "📅 Checking last refresh status..."
+    
+    if [[ -f "$STATUS_FILE" ]]; then
+        local last_status=$(jq -r '.status' "$STATUS_FILE" 2>/dev/null || echo "unknown")
+        local last_timestamp=$(jq -r '.timestamp' "$STATUS_FILE" 2>/dev/null || echo "unknown")
+        
+        echo "Last refresh status: $last_status"
+        echo "Last refresh time: $last_timestamp"
+        
+        if [[ "$last_status" == "success" ]]; then
+            echo -e "${GREEN}✅ Last refresh completed successfully${NC}"
+        else
+            echo -e "${RED}❌ Last refresh failed or is incomplete${NC}"
+            return 1
+        fi
+    else
+        echo -e "${YELLOW}⚠️ No refresh status file found${NC}"
+        return 1
+    fi
+}
+
+check_log_file() {
+    log "📋 Checking refresh log file..."
+    
+    if [[ -f "$LOG_FILE" ]]; then
+        local log_size=$(du -h "$LOG_FILE" | cut -f1)
+        local last_entry=$(tail -1 "$LOG_FILE" 2>/dev/null || echo "No entries")
+        
+        echo "Log file size: $log_size"
+        echo "Last log entry: $last_entry"
+        
+        # Check for recent errors
+        local error_count=$(grep -c "ERROR" "$LOG_FILE" 2>/dev/null || echo "0")
+        if [[ "$error_count" -gt 0 ]]; then
+            echo -e "${YELLOW}⚠️ Found $error_count errors in log file${NC}"
+            echo "Recent errors:"
+            grep "ERROR" "$LOG_FILE" | tail -5
+        else
+            echo -e "${GREEN}✅ No errors found in log file${NC}"
+        fi
+    else
+        echo -e "${YELLOW}⚠️ Log file not found${NC}"
+    fi
+}
+
+check_database_connectivity() {
+    log "🔌 Testing database connectivity..."
+    
+    # Test development database connection
+    if PGPASSWORD="${DEV_DB_PASSWORD}" psql -h "${DEV_DB_HOST}" -p "${DEV_DB_PORT}" -U "${DEV_DB_USER}" -d "${DEV_DB_NAME}" -c "SELECT 1;" >/dev/null 2>&1; then
+        echo -e "${GREEN}✅ Development database connection successful${NC}"
+    else
+        echo -e "${RED}❌ Development database connection failed${NC}"
+        return 1
+    fi
+    
+    # Test production database connection (read-only)
+    if PGPASSWORD="${PROD_DB_PASSWORD}" psql -h "${PROD_DB_HOST}" -p "${PROD_DB_PORT}" -U "${PROD_DB_USER}" -d "${PROD_DB_NAME}" -c "SELECT 1;" >/dev/null 2>&1; then
+        echo -e "${GREEN}✅ Production database connection successful${NC}"
+    else
+        echo -e "${RED}❌ Production database connection failed${NC}"
+        return 1
+    fi
+}
+
+check_development_data() {
+    log "📊 Checking development database data..."
+    
+    # Count records in key tables
+    PGPASSWORD="${DEV_DB_PASSWORD}" psql -h "${DEV_DB_HOST}" -p "${DEV_DB_PORT}" -U "${DEV_DB_USER}" -d "${DEV_DB_NAME}" -t -c "
+        SELECT 
+            'runsignup_events: ' || COUNT(*) 
+        FROM runsignup_events
+        UNION ALL
+        SELECT 
+            'ct_events: ' || COUNT(*) 
+        FROM ct_events
+        UNION ALL
+        SELECT 
+            'runsignup_participants: ' || COUNT(*) 
+        FROM runsignup_participants
+        UNION ALL
+        SELECT 
+            'ct_participants: ' || COUNT(*) 
+        FROM ct_participants;
+    " 2>/dev/null | while read -r line; do
+        echo "  $line"
+    done
+}
+
+check_s3_backup_status() {
+    log "☁️ Checking S3 backup status..."
+    
+    if command -v aws >/dev/null 2>&1; then
+        local recent_backups=$(aws s3 ls "s3://${S3_BACKUP_BUCKET}/database-backups/production/" --recursive | grep "$(date +%Y/%m)" | wc -l)
+        echo "Recent backups this month: $recent_backups"
+        
+        if [[ "$recent_backups" -gt 0 ]]; then
+            echo -e "${GREEN}✅ Recent backups found in S3${NC}"
+        else
+            echo -e "${YELLOW}⚠️ No recent backups found in S3${NC}"
+        fi
+    else
+        echo -e "${YELLOW}⚠️ AWS CLI not available for S3 check${NC}"
+    fi
+}
+
+check_next_scheduled_refresh() {
+    log "⏰ Checking next scheduled refresh..."
+    
+    local next_run=$(systemctl list-timers project88-db-refresh.timer --no-pager | grep "project88-db-refresh.timer" | awk '{print $1, $2}')
+    
+    if [[ -n "$next_run" ]]; then
+        echo "Next scheduled refresh: $next_run"
+        echo -e "${GREEN}✅ Timer is properly scheduled${NC}"
+    else
+        echo -e "${RED}❌ No scheduled refresh found${NC}"
+        return 1
+    fi
+}
+
+send_alert() {
+    local subject="$1"
+    local message="$2"
+    
+    # Log the alert
+    log "🚨 ALERT: $subject"
+    
+    # Send email if configured (requires mail command)
+    if command -v mail >/dev/null 2>&1; then
+        echo "$message" | mail -s "$subject" "$ALERT_EMAIL"
+        log "Alert email sent to $ALERT_EMAIL"
+    fi
+    
+    # Write to system log
+    logger -t project88-db-refresh "ALERT: $subject - $message"
+}
+
+main() {
+    echo -e "${BLUE}🔍 Project88Hub Database Refresh Health Check${NC}"
+    echo "=============================================="
+    
+    local checks_passed=0
+    local total_checks=0
+    
+    # Load environment variables
+    if [[ -f "/opt/project88/scripts/.env" ]]; then
+        source /opt/project88/scripts/.env
+    else
+        echo -e "${RED}❌ Configuration file not found${NC}"
+        exit 1
+    fi
+    
+    # Run all checks
+    echo
+    ((total_checks++))
+    if check_service_status; then ((checks_passed++)); fi
+    
+    echo
+    ((total_checks++))
+    if check_last_refresh; then ((checks_passed++)); fi
+    
+    echo
+    ((total_checks++))
+    if check_log_file; then ((checks_passed++)); fi
+    
+    echo
+    ((total_checks++))
+    if check_database_connectivity; then ((checks_passed++)); fi
+    
+    echo
+    ((total_checks++))
+    check_development_data
+    ((checks_passed++))  # This check always passes (informational)
+    
+    echo
+    ((total_checks++))
+    if check_s3_backup_status; then ((checks_passed++)); fi
+    
+    echo
+    ((total_checks++))
+    if check_next_scheduled_refresh; then ((checks_passed++)); fi
+    
+    # Summary
+    echo
+    echo "=============================================="
+    echo -e "${BLUE}📊 Health Check Summary${NC}"
+    echo "Checks passed: $checks_passed/$total_checks"
+    
+    if [[ "$checks_passed" -eq "$total_checks" ]]; then
+        echo -e "${GREEN}✅ All checks passed - Database refresh system is healthy${NC}"
+        exit 0
+    elif [[ "$checks_passed" -ge $((total_checks * 3 / 4)) ]]; then
+        echo -e "${YELLOW}⚠️ Most checks passed - Minor issues detected${NC}"
+        send_alert "Database Refresh Warning" "Minor issues detected in database refresh system. $checks_passed/$total_checks checks passed."
+        exit 1
+    else
+        echo -e "${RED}❌ Multiple checks failed - Database refresh system needs attention${NC}"
+        send_alert "Database Refresh Critical" "Critical issues detected in database refresh system. Only $checks_passed/$total_checks checks passed."
+        exit 2
+    fi
+}
+
+# Handle command line arguments
+case "${1:-check}" in
+    "check")
+        main
+        ;;
+    "status")
+        check_service_status
+        check_last_refresh
+        ;;
+    "logs")
+        if [[ -f "$LOG_FILE" ]]; then
+            tail -50 "$LOG_FILE"
+        else
+            echo "Log file not found"
+        fi
+        ;;
+    "next")
+        check_next_scheduled_refresh
+        ;;
+    *)
+        echo "Usage: $0 {check|status|logs|next}"
+        echo "  check  - Run full health check (default)"
+        echo "  status - Show service and last refresh status"
+        echo "  logs   - Show recent log entries"
+        echo "  next   - Show next scheduled refresh time"
+        exit 1
+        ;;
+esac

@@ -1,0 +1,43 @@
+[Unit]
+Description=Project88Hub Development Database Refresh
+Documentation=file:///opt/project88/docs/database_refresh.md
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=oneshot
+User=project88
+Group=project88
+WorkingDirectory=/opt/project88/scripts
+
+# Environment variables for database connections
+EnvironmentFile=/opt/project88/scripts/.env
+
+# Security settings
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/log/project88 /tmp
+
+# Resource limits (refresh can be memory intensive)
+MemoryMax=2G
+TimeoutStartSec=1800  # 30 minutes timeout for long refresh
+
+# Execute the refresh script
+ExecStart=/opt/project88/scripts/dev_database_refresh.py
+
+# Cleanup on failure
+ExecStopPost=/bin/bash -c 'if [ "$SERVICE_RESULT" != "success" ]; then echo "Database refresh failed at $(date)" >> /var/log/project88/db_refresh_failures.log; fi'
+
+# Restart policy
+Restart=no
+RestartSec=300
+
+# Logging
+StandardOutput=journal+console
+StandardError=journal+console
+SyslogIdentifier=project88-db-refresh
+
+[Install]
+WantedBy=multi-user.target

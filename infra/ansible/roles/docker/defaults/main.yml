@@ -1,0 +1,14 @@
+---
+# Default variables for docker role
+app_user: appuser
+app_group: appuser
+
+# Docker configuration
+docker_insecure_registries: []
+docker_registry_mirrors: []
+
+# Container registries for authentication
+# container_registries:
+#   - registry: registry.gitlab.com
+#     username: "{{ vault_registry_username }}"
+#     password: "{{ vault_registry_password }}"

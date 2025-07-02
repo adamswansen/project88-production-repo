@@ -1,0 +1,36 @@
+---
+# SSH security configuration
+- name: Configure SSH daemon
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+    backup: yes
+  loop:
+    - { regexp: '^#?PasswordAuthentication', line: 'PasswordAuthentication no' }
+    - { regexp: '^#?PubkeyAuthentication', line: 'PubkeyAuthentication yes' }
+    - { regexp: '^#?PermitRootLogin', line: 'PermitRootLogin no' }
+    - { regexp: '^#?Port', line: 'Port 22' }
+    - { regexp: '^#?MaxAuthTries', line: 'MaxAuthTries 3' }
+    - { regexp: '^#?ClientAliveInterval', line: 'ClientAliveInterval 300' }
+    - { regexp: '^#?ClientAliveCountMax', line: 'ClientAliveCountMax 2' }
+    - { regexp: '^#?X11Forwarding', line: 'X11Forwarding no' }
+  notify: restart ssh
+  tags: ssh-config
+
+- name: Ensure SSH directory exists for app user
+  file:
+    path: "/home/{{ app_user }}/.ssh"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0700'
+  tags: ssh-keys
+
+- name: Set authorized keys for app user
+  authorized_key:
+    user: "{{ app_user }}"
+    key: "{{ item }}"
+  loop: "{{ ssh_public_keys }}"
+  when: ssh_public_keys is defined
+  tags: ssh-keys

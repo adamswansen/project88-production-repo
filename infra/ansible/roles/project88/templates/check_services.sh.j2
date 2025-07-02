@@ -1,0 +1,87 @@
+#!/bin/bash
+# Service health check script for Project88 - {{ environment }}
+
+TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+LOG_PREFIX="[$TIMESTAMP] SERVICE_CHECK"
+
+# Function to check if a port is listening
+check_port() {
+    local port=$1
+    local service=$2
+    
+    if netstat -tuln | grep -q ":$port "; then
+        echo "$LOG_PREFIX: $service (port $port) is listening"
+        return 0
+    else
+        echo "$LOG_PREFIX: ERROR - $service (port $port) is not listening"
+        return 1
+    fi
+}
+
+# Function to check Docker container health
+check_container() {
+    local container=$1
+    local service=$2
+    
+    if docker container inspect "$container" > /dev/null 2>&1; then
+        local status=$(docker container inspect "$container" --format='{{.State.Status}}')
+        local health=$(docker container inspect "$container" --format='{{.State.Health.Status}}' 2>/dev/null || echo "no-healthcheck")
+        
+        if [ "$status" = "running" ]; then
+            if [ "$health" = "healthy" ] || [ "$health" = "no-healthcheck" ]; then
+                echo "$LOG_PREFIX: $service container is running and healthy"
+                return 0
+            else
+                echo "$LOG_PREFIX: WARNING - $service container running but unhealthy ($health)"
+                return 1
+            fi
+        else
+            echo "$LOG_PREFIX: ERROR - $service container not running ($status)"
+            return 1
+        fi
+    else
+        echo "$LOG_PREFIX: ERROR - $service container not found"
+        return 1
+    fi
+}
+
+# Check all Project88 services
+SERVICES=(
+    "project88-postgres-{{ environment }}:PostgreSQL"
+    "project88-redis-{{ environment }}:Redis"
+    "project88-race-display-{{ environment }}:Race Display"
+    "project88-authentication-{{ environment }}:Authentication"
+    "project88-provider-integrations-{{ environment }}:Provider Integrations"
+    "project88-timing-collector-{{ environment }}:Timing Collector"
+)
+
+ALL_HEALTHY=0
+
+for service_info in "${SERVICES[@]}"; do
+    IFS=':' read -r container service <<< "$service_info"
+    check_container "$container" "$service" || ALL_HEALTHY=1
+done
+
+# Check critical ports
+PORTS=(
+    "{{ postgres_port }}:PostgreSQL"
+    "{{ redis_port }}:Redis"
+    "{{ race_display_port }}:Race Display"
+    "{{ auth_port }}:Authentication"
+    "{{ provider_integrations_port }}:Provider Integrations"
+    "61611:Timing Collector"
+)
+
+for port_info in "${PORTS[@]}"; do
+    IFS=':' read -r port service <<< "$port_info"
+    check_port "$port" "$service" || ALL_HEALTHY=1
+done
+
+# Overall health summary
+if [ $ALL_HEALTHY -eq 0 ]; then
+    echo "$LOG_PREFIX: All services are healthy"
+    exit 0
+else
+    echo "$LOG_PREFIX: Some services have issues - check logs above"
+    exit 1
+fi

@@ -1,0 +1,155 @@
+# Project88Hub Health Monitoring Role
+# Lightweight monitoring with AWS SES email alerts
+
+- name: Create monitoring directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: project88
+    group: project88
+    mode: '0755'
+  loop:
+    - /opt/project88/monitoring
+    - /opt/project88/monitoring/scripts
+    - /opt/project88/monitoring/config
+    - /opt/project88/monitoring/logs
+    - /var/log/project88/monitoring
+
+- name: Install monitoring dependencies
+  dnf:
+    name:
+      - python3-pip
+      - python3-requests
+      - python3-psutil
+      - mailx
+      - curl
+      - jq
+    state: present
+
+- name: Install Python dependencies for monitoring
+  pip:
+    name:
+      - boto3
+      - psutil
+      - requests
+    state: present
+    executable: pip3
+
+- name: Deploy AWS SES email configuration
+  template:
+    src: aws_ses_config.py.j2
+    dest: /opt/project88/monitoring/config/aws_ses_config.py
+    owner: project88
+    group: project88
+    mode: '0600'
+  notify: restart monitoring
+
+- name: Deploy main monitoring script
+  template:
+    src: project88_monitor.py.j2
+    dest: /opt/project88/monitoring/scripts/project88_monitor.py
+    owner: project88
+    group: project88
+    mode: '0755'
+  notify: restart monitoring
+
+- name: Deploy health check script
+  template:
+    src: health_check.sh.j2
+    dest: /opt/project88/monitoring/scripts/health_check.sh
+    owner: project88
+    group: project88
+    mode: '0755'
+
+- name: Deploy system metrics collector
+  template:
+    src: system_metrics.py.j2
+    dest: /opt/project88/monitoring/scripts/system_metrics.py
+    owner: project88
+    group: project88
+    mode: '0755'
+
+- name: Deploy daily summary report generator
+  template:
+    src: daily_summary.py.j2
+    dest: /opt/project88/monitoring/scripts/daily_summary.py
+    owner: project88
+    group: project88
+    mode: '0755'
+
+- name: Create monitoring configuration file
+  template:
+    src: monitoring_config.json.j2
+    dest: /opt/project88/monitoring/config/monitoring_config.json
+    owner: project88
+    group: project88
+    mode: '0644'
+
+- name: Create systemd service for continuous monitoring
+  template:
+    src: project88-monitoring.service.j2
+    dest: /etc/systemd/system/project88-monitoring.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+    - reload systemd
+    - restart monitoring
+
+- name: Create systemd timer for daily summary
+  template:
+    src: project88-daily-summary.timer.j2
+    dest: /etc/systemd/system/project88-daily-summary.timer
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+    - reload systemd
+    - enable daily summary timer
+
+- name: Create systemd service for daily summary
+  template:
+    src: project88-daily-summary.service.j2
+    dest: /etc/systemd/system/project88-daily-summary.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify: reload systemd
+
+- name: Create logrotate configuration for monitoring logs
+  template:
+    src: project88-monitoring.logrotate.j2
+    dest: /etc/logrotate.d/project88-monitoring
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Enable and start monitoring service
+  systemd:
+    name: project88-monitoring.service
+    enabled: yes
+    state: started
+    daemon_reload: yes
+
+- name: Enable daily summary timer
+  systemd:
+    name: project88-daily-summary.timer
+    enabled: yes
+    state: started
+    daemon_reload: yes
+
+- name: Create monitoring status check script
+  template:
+    src: check_monitoring_status.sh.j2
+    dest: /opt/project88/monitoring/scripts/check_monitoring_status.sh
+    owner: project88
+    group: project88
+    mode: '0755'
+
+- name: Set up monitoring environment variables
+  template:
+    src: monitoring.env.j2
+    dest: /opt/project88/monitoring/config/.env
+    owner: project88
+    group: project88
+    mode: '0600'

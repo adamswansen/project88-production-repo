@@ -1,0 +1,69 @@
+---
+# Project88 Main Site Playbook
+# Infrastructure-as-Code deployment for multi-environment setup
+
+- name: Deploy Project88 Infrastructure
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    # Environment detection from inventory group
+    environment: "{{ 'prod' if inventory_hostname in groups['prod'] else 'dev' }}"
+    
+  pre_tasks:
+    - name: Display deployment information
+      debug:
+        msg: |
+          Deploying Project88 to {{ environment }} environment
+          Target host: {{ inventory_hostname }}
+          Ansible user: {{ ansible_user }}
+          
+    - name: Ensure Python3 is installed
+      raw: dnf install -y python3
+      changed_when: false
+      
+    - name: Create app user
+      user:
+        name: "{{ app_user }}"
+        groups: wheel
+        shell: /bin/bash
+        create_home: yes
+        append: yes
+      tags: user-setup
+
+  roles:
+    - role: common
+      tags: ['common', 'security', 'firewall']
+      
+    - role: docker
+      tags: ['docker', 'containers']
+      
+    - role: project88
+      tags: ['project88', 'applications', 'services']
+      
+    - role: backup
+      tags: ['backup', 's3', 'database']
+
+  post_tasks:
+    - name: Verify all services are running
+      include_tasks: playbooks/verify_deployment.yml
+      tags: verification
+      
+    - name: Display deployment summary
+      debug:
+        msg: |
+          ✅ Project88 {{ environment }} deployment completed successfully!
+          
+          Services deployed:
+          - PostgreSQL: {{ postgres_port }}
+          - Redis: {{ redis_port }}
+          - Race Display: {{ race_display_port }}
+          - Authentication: {{ auth_port }}
+          - Provider Integrations: {{ provider_integrations_port }}
+          - Timing Collector: 61611
+          
+          Next steps:
+          - Verify SSL certificates are working
+          - Test application connectivity
+          - Monitor backup processes

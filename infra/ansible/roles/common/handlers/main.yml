@@ -1,0 +1,18 @@
+---
+# Handlers for common role
+- name: restart ssh
+  systemd:
+    name: sshd
+    state: restarted
+  listen: "restart ssh"
+
+- name: restart fail2ban
+  systemd:
+    name: fail2ban
+    state: restarted
+  listen: "restart fail2ban"
+
+- name: reload ufw
+  ufw:
+    state: reloaded
+  listen: "reload ufw"

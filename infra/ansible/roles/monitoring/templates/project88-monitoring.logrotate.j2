@@ -1,0 +1,41 @@
+# Logrotate configuration for Project88Hub monitoring system
+# Manages log files to prevent disk space issues
+
+/var/log/project88/monitoring/*.log {
+    daily
+    missingok
+    rotate 30
+    compress
+    delaycompress
+    notifempty
+    create 644 project88 project88
+    sharedscripts
+    
+    postrotate
+        # Signal monitoring service to reopen log files
+        systemctl reload project88-monitoring.service 2>/dev/null || true
+        
+        # Run quick health check after log rotation
+        /opt/project88/monitoring/scripts/project88_monitor.py --once >> /var/log/project88/monitoring/logrotate.log 2>&1 || true
+    endscript
+}
+
+/var/log/project88/monitoring/daily_summary.log {
+    weekly
+    missingok
+    rotate 8
+    compress
+    delaycompress
+    notifempty
+    create 644 project88 project88
+}
+
+/var/log/project88/monitoring/logrotate.log {
+    monthly
+    missingok
+    rotate 12
+    compress
+    delaycompress
+    notifempty
+    create 644 project88 project88
+}

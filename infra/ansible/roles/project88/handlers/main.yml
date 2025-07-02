@@ -1,0 +1,32 @@
+---
+# Handlers for project88 role
+- name: reload systemd
+  systemd:
+    daemon_reload: yes
+  listen: "reload systemd"
+
+- name: restart nginx
+  systemd:
+    name: nginx
+    state: restarted
+  listen: "restart nginx"
+
+- name: reload nginx
+  systemd:
+    name: nginx
+    state: reloaded
+  listen: "reload nginx"
+
+- name: restart postgresql
+  docker_container:
+    name: "project88-postgres-{{ environment }}"
+    state: started
+    restart: yes
+  listen: "restart postgresql"
+
+- name: restart redis
+  docker_container:
+    name: "project88-redis-{{ environment }}"
+    state: started
+    restart: yes
+  listen: "restart redis"

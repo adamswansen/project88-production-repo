@@ -1,0 +1,58 @@
+# Development Environment Configuration
+# Project88Hub Development VPS
+
+environment: dev
+environment_suffix: "-dev"
+
+# Domain Configuration
+primary_domain: dev.project88hub.com
+race_display_domain: dev.display.project88hub.com
+auth_domain: dev.auth.project88hub.com
+provider_integrations_domain: dev.api.project88hub.com
+
+# Application Ports (different from prod to avoid conflicts)
+postgres_port: 5433
+redis_port: 6380
+race_display_port: 5002
+auth_port: 8003
+provider_integrations_port: 8004
+
+# Database Configuration
+postgres_db: project88_dev_myappdb
+postgres_user: project88_dev_user
+postgres_password: "{{ vault_dev_postgres_password }}"
+
+# Docker Registry Configuration
+docker_registry: registry.gitlab.com
+docker_tag: develop
+
+# Development Database Refresh
+dev_refresh_enabled: true
+dev_db_record_limit: 500
+
+# Backup Schedule (4 AM daily - after dev refresh)
+backup_schedule: "0 4 * * *"
+
+# Server Specifications
+server_specs:
+  cpu_cores: 2
+  memory_gb: 8
+  disk_gb: 100
+  
+# Log Configuration
+log_level: DEBUG
+log_retention_days: 7
+
+# Application replicas (single instance for dev)
+replicas:
+  race_display: 1
+  ai_platform: 1
+  authentication: 1
+  chronotrack_collector: 1
+
+# Development specific settings
+dev_features:
+  debug_mode: true
+  hot_reload: true
+  test_data: true
+  mock_external_apis: false

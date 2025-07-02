@@ -1,0 +1,90 @@
+---
+# Production Environment Deployment
+- name: Deploy Project88 to Production
+  hosts: prod
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    environment: prod
+    
+  pre_tasks:
+    - name: Production deployment confirmation
+      pause:
+        prompt: |
+          ⚠️  PRODUCTION DEPLOYMENT WARNING ⚠️
+          
+          You are about to deploy to PRODUCTION environment:
+          - Host: {{ inventory_hostname }}
+          - Environment: {{ environment }}
+          - Database: {{ postgres_db }}
+          
+          This will affect live services and data.
+          
+          Type 'yes' to continue with production deployment
+      register: prod_confirmation
+      when: not (auto_deploy | default(false))
+      
+    - name: Validate production confirmation
+      fail:
+        msg: "Production deployment cancelled by user"
+      when: 
+        - not (auto_deploy | default(false))
+        - prod_confirmation.user_input != 'yes'
+
+  roles:
+    - role: common
+      vars:
+        app_ports:
+          - "{{ race_display_port }}"
+          - "{{ auth_port }}"
+          - "{{ provider_integrations_port }}"
+        fail2ban_email: "alex@superracesystems.com"
+        enable_app_fail2ban: true
+      tags: ['common', 'security']
+      
+    - role: docker
+      vars:
+        container_registries:
+          - registry: registry.gitlab.com
+            username: "{{ vault_registry_username }}"
+            password: "{{ vault_registry_password }}"
+      tags: ['docker']
+      
+    - role: project88
+      vars:
+        docker_tag: "{{ deploy_tag | default('latest') }}"
+        ssl_domains:
+          - "{{ race_display_domain }}"
+          - "{{ auth_domain }}"
+          - "{{ provider_integrations_domain }}"
+        deployment_method: docker
+      tags: ['project88', 'applications']
+      
+    - role: backup
+      vars:
+        backup_alert_email: "alex@superracesystems.com"
+        dev_refresh_enabled: false
+      tags: ['backup']
+
+  post_tasks:
+    - name: Send production deployment notification
+      mail:
+        to: ["alex@superracesystems.com", "adam@brrm.com"]
+        subject: "Project88 Production Deployment Complete"
+        body: |
+          Project88 production deployment completed successfully.
+          
+          Environment: {{ environment }}
+          Host: {{ inventory_hostname }}
+          Timestamp: {{ ansible_date_time.iso8601 }}
+          
+          Services deployed:
+          - Race Display: https://{{ race_display_domain }}
+          - Authentication: https://{{ auth_domain }} 
+          - Provider Integrations: https://{{ provider_integrations_domain }}
+          - Timing Collector: {{ inventory_hostname }}:61611
+          
+          Please verify all services are operational.
+      when: smtp_server is defined
+      tags: notification

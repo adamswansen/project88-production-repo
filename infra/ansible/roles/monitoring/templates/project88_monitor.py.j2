@@ -1,0 +1,424 @@
+#!/usr/bin/env python3
+"""
+Project88Hub Health Monitoring System
+Lightweight monitoring with AWS SES email alerts
+"""
+
+import os
+import sys
+import json
+import time
+import logging
+import psutil
+import requests
+import subprocess
+from datetime import datetime, timedelta
+from pathlib import Path
+
+# Add config directory to path
+sys.path.append('/opt/project88/monitoring/config')
+from aws_ses_config import SESEmailSender
+
+class Project88Monitor:
+    def __init__(self, config_file='/opt/project88/monitoring/config/monitoring_config.json'):
+        self.config = self.load_config(config_file)
+        self.environment = self.config.get('environment', 'production')
+        self.email_sender = SESEmailSender()
+        self.setup_logging()
+        self.last_alert_times = {}
+        
+    def load_config(self, config_file):
+        """Load monitoring configuration"""
+        try:
+            with open(config_file, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Error loading config: {e}")
+            return self.get_default_config()
+    
+    def get_default_config(self):
+        """Default configuration with industry standard thresholds"""
+        return {
+            "environment": "{{ 'development' if inventory_hostname in groups['dev'] else 'production' }}",
+            "thresholds": {
+                "disk_warning": 80,
+                "disk_critical": 90,
+                "memory_warning": 85,
+                "memory_critical": 90,
+                "cpu_warning": 80,
+                "cpu_critical": 95,
+                "load_warning": 2.0,
+                "load_critical": 4.0
+            },
+            "services": {
+                "race_display": {
+                    "url": "http://localhost:{{ '5001' if inventory_hostname in groups.get('prod', []) else '5002' }}/health",
+                    "timeout": 10
+                },
+                "ai_platform": {
+                    "url": "http://localhost:{{ '8501' if inventory_hostname in groups.get('prod', []) else '8502' }}/health",
+                    "timeout": 10
+                },
+                "chronotrack_collector": {
+                    "port": 61611,
+                    "timeout": 5
+                },
+                "authentication": {
+                    "url": "http://localhost:{{ '8000' if inventory_hostname in groups.get('prod', []) else '8001' }}/health",
+                    "timeout": 10
+                },
+                "database": {
+                    "host": "localhost",
+                    "port": {{ '5432' if inventory_hostname in groups.get('prod', []) else '5433' }},
+                    "database": "{{ 'project88_myappdb' if inventory_hostname in groups.get('prod', []) else 'project88_dev_myappdb' }}",
+                    "user": "{{ 'project88_myappuser' if inventory_hostname in groups.get('prod', []) else 'project88_dev_user' }}"
+                }
+            },
+            "alert_cooldown": 300,  # 5 minutes between duplicate alerts
+            "check_interval": 60    # Check every minute
+        }
+    
+    def setup_logging(self):
+        """Configure logging"""
+        log_file = f'/var/log/project88/monitoring/monitor_{self.environment}.log'
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler(log_file),
+                logging.StreamHandler()
+            ]
+        )
+        self.logger = logging.getLogger(__name__)
+    
+    def check_system_metrics(self):
+        """Check system-level metrics"""
+        metrics = {}
+        alerts = []
+        
+        # CPU Usage (5-minute average)
+        cpu_percent = psutil.cpu_percent(interval=1)
+        load_avg = os.getloadavg()[1]  # 5-minute load average
+        metrics['cpu_percent'] = cpu_percent
+        metrics['load_average'] = load_avg
+        
+        if cpu_percent > self.config['thresholds']['cpu_critical']:
+            alerts.append({
+                'type': 'critical',
+                'metric': 'cpu',
+                'value': cpu_percent,
+                'threshold': self.config['thresholds']['cpu_critical'],
+                'message': f'CPU usage critical: {cpu_percent:.1f}%'
+            })
+        elif cpu_percent > self.config['thresholds']['cpu_warning']:
+            alerts.append({
+                'type': 'warning',
+                'metric': 'cpu',
+                'value': cpu_percent,
+                'threshold': self.config['thresholds']['cpu_warning'],
+                'message': f'CPU usage warning: {cpu_percent:.1f}%'
+            })
+        
+        # Memory Usage
+        memory = psutil.virtual_memory()
+        metrics['memory_percent'] = memory.percent
+        metrics['memory_available_gb'] = memory.available / (1024**3)
+        
+        if memory.percent > self.config['thresholds']['memory_critical']:
+            alerts.append({
+                'type': 'critical',
+                'metric': 'memory',
+                'value': memory.percent,
+                'threshold': self.config['thresholds']['memory_critical'],
+                'message': f'Memory usage critical: {memory.percent:.1f}%'
+            })
+        elif memory.percent > self.config['thresholds']['memory_warning']:
+            alerts.append({
+                'type': 'warning',
+                'metric': 'memory',
+                'value': memory.percent,
+                'threshold': self.config['thresholds']['memory_warning'],
+                'message': f'Memory usage warning: {memory.percent:.1f}%'
+            })
+        
+        # Disk Usage
+        disk_usage = psutil.disk_usage('/')
+        disk_percent = (disk_usage.used / disk_usage.total) * 100
+        metrics['disk_percent'] = disk_percent
+        metrics['disk_free_gb'] = disk_usage.free / (1024**3)
+        
+        if disk_percent > self.config['thresholds']['disk_critical']:
+            alerts.append({
+                'type': 'critical',
+                'metric': 'disk',
+                'value': disk_percent,
+                'threshold': self.config['thresholds']['disk_critical'],
+                'message': f'Disk usage critical: {disk_percent:.1f}%'
+            })
+        elif disk_percent > self.config['thresholds']['disk_warning']:
+            alerts.append({
+                'type': 'warning',
+                'metric': 'disk',
+                'value': disk_percent,
+                'threshold': self.config['thresholds']['disk_warning'],
+                'message': f'Disk usage warning: {disk_percent:.1f}%'
+            })
+        
+        return metrics, alerts
+    
+    def check_service_health(self):
+        """Check application service health"""
+        service_status = {}
+        alerts = []
+        
+        for service_name, config in self.config['services'].items():
+            try:
+                if service_name == 'chronotrack_collector':
+                    # Port connectivity check
+                    status = self.check_port_connectivity('localhost', config['port'])
+                elif service_name == 'database':
+                    # Database connectivity check
+                    status = self.check_database_connectivity(config)
+                else:
+                    # HTTP health endpoint check
+                    status = self.check_http_health(config['url'], config['timeout'])
+                
+                service_status[service_name] = status
+                
+                if not status['healthy']:
+                    alerts.append({
+                        'type': 'critical',
+                        'metric': 'service',
+                        'service': service_name,
+                        'message': f'Service {service_name} is down: {status["error"]}'
+                    })
+                
+            except Exception as e:
+                service_status[service_name] = {
+                    'healthy': False,
+                    'error': str(e),
+                    'response_time': None
+                }
+                alerts.append({
+                    'type': 'critical',
+                    'metric': 'service',
+                    'service': service_name,
+                    'message': f'Service {service_name} check failed: {str(e)}'
+                })
+        
+        return service_status, alerts
+    
+    def check_http_health(self, url, timeout):
+        """Check HTTP health endpoint"""
+        try:
+            start_time = time.time()
+            response = requests.get(url, timeout=timeout)
+            response_time = time.time() - start_time
+            
+            return {
+                'healthy': response.status_code == 200,
+                'status_code': response.status_code,
+                'response_time': response_time,
+                'error': None if response.status_code == 200 else f'HTTP {response.status_code}'
+            }
+        except Exception as e:
+            return {
+                'healthy': False,
+                'status_code': None,
+                'response_time': None,
+                'error': str(e)
+            }
+    
+    def check_port_connectivity(self, host, port):
+        """Check port connectivity"""
+        try:
+            import socket
+            start_time = time.time()
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5)
+            result = sock.connect_ex((host, port))
+            response_time = time.time() - start_time
+            sock.close()
+            
+            return {
+                'healthy': result == 0,
+                'response_time': response_time,
+                'error': None if result == 0 else f'Port {port} not accessible'
+            }
+        except Exception as e:
+            return {
+                'healthy': False,
+                'response_time': None,
+                'error': str(e)
+            }
+    
+    def check_database_connectivity(self, config):
+        """Check database connectivity"""
+        try:
+            start_time = time.time()
+            import subprocess
+            
+            # Use pg_isready for quick connectivity check
+            result = subprocess.run([
+                'pg_isready', 
+                '-h', config['host'],
+                '-p', str(config['port']),
+                '-d', config['database'],
+                '-U', config['user']
+            ], capture_output=True, text=True, timeout=10)
+            
+            response_time = time.time() - start_time
+            
+            return {
+                'healthy': result.returncode == 0,
+                'response_time': response_time,
+                'error': None if result.returncode == 0 else result.stderr.strip()
+            }
+        except Exception as e:
+            return {
+                'healthy': False,
+                'response_time': None,
+                'error': str(e)
+            }
+    
+    def should_send_alert(self, alert):
+        """Check if alert should be sent (cooldown logic)"""
+        alert_key = f"{alert['metric']}_{alert.get('service', '')}"
+        current_time = time.time()
+        
+        if alert_key in self.last_alert_times:
+            time_since_last = current_time - self.last_alert_times[alert_key]
+            if time_since_last < self.config['alert_cooldown']:
+                return False
+        
+        self.last_alert_times[alert_key] = current_time
+        return True
+    
+    def send_alert(self, alert, system_metrics, service_status):
+        """Send alert email via AWS SES"""
+        if not self.should_send_alert(alert):
+            return
+        
+        subject = f"[{self.environment.upper()}] {alert['type'].upper()}: {alert['message']}"
+        
+        body = self.format_alert_email(alert, system_metrics, service_status)
+        
+        try:
+            self.email_sender.send_alert(subject, body, alert['type'])
+            self.logger.info(f"Alert sent: {alert['message']}")
+        except Exception as e:
+            self.logger.error(f"Failed to send alert: {e}")
+    
+    def format_alert_email(self, alert, system_metrics, service_status):
+        """Format alert email body"""
+        body = f"""
+PROJECT88HUB MONITORING ALERT
+Environment: {self.environment.upper()}
+Server: {os.uname().nodename}
+Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S EST')}
+
+ALERT DETAILS:
+Type: {alert['type'].upper()}
+Message: {alert['message']}
+
+CURRENT SYSTEM METRICS:
+CPU Usage: {system_metrics.get('cpu_percent', 'N/A'):.1f}%
+Memory Usage: {system_metrics.get('memory_percent', 'N/A'):.1f}%
+Disk Usage: {system_metrics.get('disk_percent', 'N/A'):.1f}%
+Load Average: {system_metrics.get('load_average', 'N/A'):.2f}
+
+SERVICE STATUS:
+"""
+        
+        for service, status in service_status.items():
+            health_icon = "✅" if status['healthy'] else "❌"
+            response_time = f"{status.get('response_time', 0)*1000:.0f}ms" if status.get('response_time') else "N/A"
+            body += f"{health_icon} {service}: {'UP' if status['healthy'] else 'DOWN'} ({response_time})\n"
+        
+        body += f"""
+---
+This is an automated alert from Project88Hub Monitoring System.
+Contact: alex@superracesystems.com, adam@brrm.com
+"""
+        return body
+    
+    def save_metrics(self, system_metrics, service_status):
+        """Save metrics to JSON file for daily summary"""
+        metrics_data = {
+            'timestamp': datetime.now().isoformat(),
+            'system': system_metrics,
+            'services': service_status
+        }
+        
+        metrics_file = f'/var/log/project88/monitoring/metrics_{datetime.now().strftime("%Y%m%d")}.json'
+        
+        try:
+            # Append to daily metrics file
+            if os.path.exists(metrics_file):
+                with open(metrics_file, 'r') as f:
+                    data = json.load(f)
+            else:
+                data = []
+            
+            data.append(metrics_data)
+            
+            with open(metrics_file, 'w') as f:
+                json.dump(data, f, indent=2)
+                
+        except Exception as e:
+            self.logger.error(f"Failed to save metrics: {e}")
+    
+    def run_monitoring_cycle(self):
+        """Run a single monitoring cycle"""
+        self.logger.info("Starting monitoring cycle")
+        
+        # Check system metrics
+        system_metrics, system_alerts = self.check_system_metrics()
+        
+        # Check service health
+        service_status, service_alerts = self.check_service_health()
+        
+        # Save metrics for daily summary
+        self.save_metrics(system_metrics, service_status)
+        
+        # Process alerts
+        all_alerts = system_alerts + service_alerts
+        
+        for alert in all_alerts:
+            self.send_alert(alert, system_metrics, service_status)
+        
+        # Log summary
+        healthy_services = sum(1 for s in service_status.values() if s['healthy'])
+        total_services = len(service_status)
+        
+        self.logger.info(
+            f"Monitoring cycle complete - "
+            f"CPU: {system_metrics.get('cpu_percent', 0):.1f}%, "
+            f"Memory: {system_metrics.get('memory_percent', 0):.1f}%, "
+            f"Disk: {system_metrics.get('disk_percent', 0):.1f}%, "
+            f"Services: {healthy_services}/{total_services} healthy, "
+            f"Alerts: {len(all_alerts)}"
+        )
+    
+    def run_continuous_monitoring(self):
+        """Run continuous monitoring loop"""
+        self.logger.info(f"Starting continuous monitoring for {self.environment}")
+        
+        while True:
+            try:
+                self.run_monitoring_cycle()
+                time.sleep(self.config['check_interval'])
+            except KeyboardInterrupt:
+                self.logger.info("Monitoring stopped by user")
+                break
+            except Exception as e:
+                self.logger.error(f"Monitoring cycle error: {e}")
+                time.sleep(30)  # Wait 30s before retrying
+
+if __name__ == "__main__":
+    monitor = Project88Monitor()
+    
+    if len(sys.argv) > 1 and sys.argv[1] == '--once':
+        monitor.run_monitoring_cycle()
+    else:
+        monitor.run_continuous_monitoring()

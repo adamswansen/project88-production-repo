@@ -1,0 +1,8 @@
+# Fail2ban filter for Project88 authentication failures
+[Definition]
+failregex = ^.*Authentication failed.*from <HOST>.*$
+            ^.*Invalid login attempt.*from <HOST>.*$
+            ^.*Failed password.*from <HOST>.*$
+            ^.*Unauthorized access.*from <HOST>.*$
+
+ignoreregex =

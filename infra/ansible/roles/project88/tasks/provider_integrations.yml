@@ -1,0 +1,44 @@
+---
+# Provider Integrations service deployment
+- name: Create provider integrations configuration
+  template:
+    src: provider-integrations.env.j2
+    dest: "{{ app_config_dir }}/provider-integrations.env"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0600'
+  tags: provider-config
+
+- name: Deploy Provider Integrations container
+  docker_container:
+    name: "project88-provider-integrations-{{ environment }}"
+    image: "{{ docker_registry }}/project88/provider-integrations:{{ docker_tag | default('latest') }}"
+    state: started
+    restart_policy: always
+    env_file: "{{ app_config_dir }}/provider-integrations.env"
+    volumes:
+      - "{{ app_log_dir }}:/var/log/project88"
+      - "/etc/localtime:/etc/localtime:ro"
+    networks:
+      - name: "project88-{{ environment }}"
+    healthcheck:
+      test: ["CMD", "python", "main.py", "--test-connection"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    labels:
+      project88.service: "provider-integrations"
+      project88.environment: "{{ environment }}"
+      traefik.enable: "true"
+      traefik.http.routers.provider-integrations-{{ environment }}.rule: "Host(`{{ provider_integrations_domain }}`)"
+      traefik.http.services.provider-integrations-{{ environment }}.loadbalancer.server.port: "8000"
+  tags: provider-container
+
+- name: Create systemd service for provider integrations
+  template:
+    src: provider-integrations.service.j2
+    dest: /etc/systemd/system/project88-provider-integrations-{{ environment }}.service
+  notify: reload systemd
+  when: deployment_method == 'systemd'
+  tags: provider-systemd

@@ -1,130 +1,131 @@
-# Infrastructure‑as‑Code (IaC) – Project 88
+# Infrastructure‑as‑Code (IaC) – Project 88
 
-> **File:** `infrastructure_as_code.md`\
-> **Version:** v0.1 – 2025‑07‑01\
-> **Maintainer:** DevOps Team
-
----
-
-## 1  Objective
-
-Provide an auditable, repeatable, one‑command path to **provision**, **configure**, and **deploy** Project 88 on any compatible VPS or IaaS instance.
+File: `infrastructure_as_code.md`\
+Version: **v0.3 – 2025‑07‑02**\
+Maintainer: DevOps Team
 
 ---
 
-## 2  Toolchain Overview
+## 1 Goal
 
-| Layer                    | Tool                                    | Why Chosen                                                                   |
-| ------------------------ | --------------------------------------- | ---------------------------------------------------------------------------- |
-| Configuration & Deploy   | **Ansible 2.16+**                       | Push model (no daemon), YAML syntax, idempotent, built‑in Vault              |
-| Secrets                  | **Ansible Vault** + GitLab CI variables | Encrypts `.env` & DB creds in repo; CI supplies vault pass automatically     |
-
-> **MVP Scope:** Ansible only. Terraform modules will be added when we migrate prod off WHM.
+Automate configuration, application deployment, and ongoing drift detection for the two long‑lived **Hostinger VPSs** (prod & dev) using **Ansible only**. The servers themselves are provisioned once via the Hostinger UI; everything else is codified so that any state can be reproduced with a single playbook run.
 
 ---
 
-## 3  Repository Layout
+## 2 Toolchain Stack
+
+| Layer                | Tool                                  | License | State backend              | Why we use it                                           |
+| -------------------- | ------------------------------------- | ------- | -------------------------- | ------------------------------------------------------- |
+| Host config & deploy | **Ansible 2.16**                      | GPL‑v3  | stateless (YAML playbooks) | Push model; idempotent tasks; Ansible Vault for secrets |
+| Secrets              | Ansible Vault + GitLab CI masked vars | GPL‑v3  | —                          | Encrypt `.env`, DB creds                                |
+| CI Runner            | GitLab CI/CD                          | MIT     | —                          | Automates lint, check, deploy stages                    |
+
+---
+
+## 3 Repository Layout
 
 ```
 infra/
-  inventory.yml            # host groups: dev, prod
-  group_vars/
-    all.yml                # shared, non‑secret
-    dev.yml                # dev overrides
-    prod.yml               # 🔐 vaulted secrets
-  roles/
-    common/                # OS hardening, firewalld, users
-    docker/                # Engine + compose‑v2 plugin
-    postgres/              # optional local Postgres install/config
-    project88/
-      templates/
-        docker‑compose.yml.j2
-      tasks/main.yml       # pull & up -d
-    backup/                # pg_dump + wal‑g timer units
-  playbooks/
-    site.yml               # full stack
-    deploy.yml             # project88 role only
+  ansible/
+    inventory/
+      dev.ini
+      prod.ini
+    group_vars/
+      all.yml
+      dev.yml          # vaulted
+      prod.yml         # vaulted
+    roles/
+      common/          # hardening, users, fail2ban, etc.
+      docker/
+      project88/
+      backup/
+    playbooks/
+      site.yml         # OS baseline + docker
+      deploy.yml       # pull latest containers, restart
+.gitlab-ci.yml
 ```
 
-### 3.1  Inventory Example
+**Inventory management:** IPs/hostnames are recorded manually when a VPS is (re)built. Production and dev inventories live side‑by‑side so that CI can target either environment.
 
-```yaml
-all:
-  vars:
-    ansible_user: centos
-    ansible_ssh_private_key_file: ~/.ssh/p88_key
-  children:
-    prod:
-      hosts:
-        p88-prod.example.com:
-          compose_project: p88
-    dev:
-      hosts:
-        p88-dev.example.com:
-          compose_project: p88dev
+---
+
+## 4 CI/CD Flow (high‑level)
+
+```
+           ┌────────────┐  ansible-playbook           ┌──────────────┐
+GitLab CI ─┤  Ansible   ├────────────────────────────▶│  VPS (SSH)   │
+           └─────┬──────┘                              └──────────────┘
+                 ▲
+                 │ lint / check-mode
+                 │
+           ┌────────────┐
+           │ansible-lint│
+           └────────────┘
 ```
 
----
-
-## 4  Key Roles & Responsibilities
-
-| Role          | Tags    | Highlights                                                                                   |
-| ------------- | ------- | -------------------------------------------------------------------------------------------- |
-| **common**    | common  | hostname, `/etc/login.defs`, fail2ban, firewalld (80/443/22), timezone ET                    |
-| **docker**    | docker  | yum‑config‑manager → Docker CE repo, install engine+cli, enable, usermod –aG docker `centos` |
-| **project88** | project | Template compose file & `.env`, pull image tag, `docker compose up -d`, waits on health      |
-| **backup**    | backup  | install lz4 + wal‑g, drop `pg_dump_p88.sh`, systemd timer 03:00, Prometheus‑push gating      |
+- ``** stage** — runs `ansible-lint` + `yamllint` on every Merge Request.
+- ``** job** — auto‑runs on commits to `dev` branch; targets `infra/ansible/inventory/dev.ini`.
+- ``** job** — manual & protected; targets `prod.ini`.
+- ``** scheduled job** — weekly `ansible-playbook site.yml --check` for both hosts; emails diff if tasks would change anything.
 
 ---
 
-## 5  Running Playbooks Locally
+## 5 Granular Plan of Action
 
-```bash
-# Full bootstrap (common + docker + project88) on dev
-ansible-playbook playbooks/site.yml -l dev -e "image_tag=latest"
-
-# Deploy only a new image tag on prod
-ansible-playbook playbooks/deploy.yml -l prod -e "image_tag=v2025.07.01-abc123"
-```
-
-The vault password is read from `ANSIBLE_VAULT_PASSWORD` env var or `--vault-password-file ~/vault_pass`.
-
----
-
-## 6  CI/CD Integration
-
-- GitLab Runner image: `ansible/ansible-runner:2`.
-- Job `before_script` writes SSH key & vault pass to tmp files.
-- CI variable `TARGET_ENV` maps to inventory group (`dev` or `prod`).
-
-```yaml
-.deploy_template: &deploy
-  stage: deploy
-  image: ansible/ansible-runner:2
-  script:
-    - ansible-playbook playbooks/deploy.yml -l $TARGET_ENV -e "image_tag=$CI_COMMIT_SHA"
-```
+| Day | Deliverable                      | Detail                                                                     |
+| --- | -------------------------------- | -------------------------------------------------------------------------- |
+| 1   | Create `infra/ansible/` skeleton | inventory, group\_vars, roles                                              |
+| 2   | Write `roles/common`             | users, SSH hardening, UFW, fail2ban                                        |
+| 3   | Write `roles/docker`             | install Docker Engine & Compose plugin                                     |
+| 4   | Write `roles/project88`          | pull images, compose up                                                    |
+| 5   | Write `roles/backup`             | nightly pg\_dump → S3 (or Hostinger Object Storage)                        |
+| 6   | Configure GitLab CI lint stage   | docker image `cytopia/ansible-lint`                                        |
+| 7   | Add `deploy_dev` job             | `ansible-playbook -i inventory/dev.ini site.yml && deploy.yml`             |
+| 8   | Secure secrets with Vault        | commit vaulted `dev.yml` & `prod.yml`; add CI var `ANSIBLE_VAULT_PASSWORD` |
+| 9   | Protect `deploy_prod` job        | require manual approval                                                    |
+| 10  | Schedule weekly drift check      | GitLab → CI/CD → Schedules                                                 |
 
 ---
 
-## 7  Drift Detection & Auditing
+## 6 Secrets Management
 
-- Weekly cron job in GitLab Pipeline runs `ansible-playbook --check` against prod; any `changed` results create an MR tagging Ops to reconcile.
-- `ansible-lint` executed per MR to enforce best practices.
+- **Vault files** (`group_vars/*/vault.yml`) encrypted with a shared passphrase stored as the masked variable `ANSIBLE_VAULT_PASSWORD`.
+- **GitLab CI variables** for anything that should never enter git (API keys, DB root passwords).
+- Vault split per‑environment so dev and prod secrets stay isolated.
 
 ---
 
-## 8  Future Enhancements
+## 7 Drift Detection
 
-1. **Terraform modules**: ALB + ACM TLS termination, Route53 records, S3 bucket.
-2. **Molecule tests** for role regression.
-3. **Aqua Security Trivy‑role** to scan host packages during playbook run.
+- **Ansible check‑mode:**
+  ```bash
+  ansible-playbook -i inventory/prod.ini site.yml --check --diff
+  ```
+  Exit code ≠ 0 or diff output → pipeline fails and notifies DevOps.
+- **Server hardening enforcement:** `roles/common` runs every deploy, so any manual change (e.g., unauthorized user account) is reverted automatically.
+
+---
+
+## 8 Testing
+
+1. **ansible‑lint** & **yamllint** on every MR.
+2. **Molecule** scenario per role using Docker container images (`almalinux:9`), executed nightly.
+3. **Testinfra** assertions (ports open, services running) as part of Molecule verify stage.
+
+---
+
+## 9 Future Improvements
+
+- Migrate inventories to **Ansible Inventory Plugin for NetBox** if project adds many hosts.
+- Use **GitLab Deploy‑ment environments** for richer history and rollback buttons.
+- Replace manual IP recording with a tiny bash script that queries Hostinger API and rewrites the inventory files.
 
 ---
 
 ### Change Log
 
-| Date       | Author | Notes         |
-| ---------- | ------ | ------------- |
-| 2025‑07‑01 | DevOps | Initial draft |
+| Date       | Author | Note                                                     |
+| ---------- | ------ | -------------------------------------------------------- |
+| 2025‑07‑01 | DevOps | Initial Terraform + Ansible version                      |
+| 2025‑07‑02 | DevOps | **Removed Terraform**; switched to pure‑Ansible approach |
 

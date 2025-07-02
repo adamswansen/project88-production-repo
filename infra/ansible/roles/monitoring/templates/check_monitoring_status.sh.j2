@@ -1,0 +1,193 @@
+#!/bin/bash
+
+# Project88Hub Monitoring Status Check Script
+# Quick health check for the monitoring system itself
+
+set -euo pipefail
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+ENVIRONMENT="{{ 'DEV' if inventory_hostname in groups.get('dev', []) else 'PROD' }}"
+SERVER_NAME="{{ inventory_hostname }}"
+
+echo -e "${BLUE}🔍 Project88Hub Monitoring System Status${NC}"
+echo "Environment: $ENVIRONMENT"
+echo "Server: $SERVER_NAME"
+echo "Time: $(date '+%Y-%m-%d %H:%M:%S EST')"
+echo "================================================"
+
+# Check monitoring service status
+echo -e "\n${BLUE}📊 Monitoring Service Status:${NC}"
+if systemctl is-active --quiet project88-monitoring.service; then
+    echo -e "✅ ${GREEN}Monitoring service is running${NC}"
+    
+    # Get service uptime
+    uptime=$(systemctl show project88-monitoring.service --property=ActiveEnterTimestamp --value)
+    echo "   Started: $uptime"
+    
+    # Check memory usage
+    mem_usage=$(systemctl show project88-monitoring.service --property=MemoryCurrent --value)
+    if [[ "$mem_usage" != "[not set]" && "$mem_usage" -gt 0 ]]; then
+        mem_mb=$((mem_usage / 1024 / 1024))
+        echo "   Memory usage: ${mem_mb} MB"
+    fi
+else
+    echo -e "❌ ${RED}Monitoring service is not running${NC}"
+    echo "   Last few log entries:"
+    journalctl -u project88-monitoring.service -n 3 --no-pager
+fi
+
+# Check daily summary timer
+echo -e "\n${BLUE}📅 Daily Summary Timer:${NC}"
+if systemctl is-active --quiet project88-daily-summary.timer; then
+    echo -e "✅ ${GREEN}Daily summary timer is active${NC}"
+    
+    # Get next run time
+    next_run=$(systemctl list-timers project88-daily-summary.timer --no-pager | grep "project88-daily-summary.timer" | awk '{print $1, $2}')
+    if [[ -n "$next_run" ]]; then
+        echo "   Next run: $next_run"
+    fi
+else
+    echo -e "❌ ${RED}Daily summary timer is not active${NC}"
+fi
+
+# Check log files
+echo -e "\n${BLUE}📋 Log File Status:${NC}"
+LOG_DIR="/var/log/project88/monitoring"
+if [[ -d "$LOG_DIR" ]]; then
+    echo -e "✅ ${GREEN}Log directory exists${NC}"
+    
+    # Check main log file
+    MAIN_LOG="$LOG_DIR/monitor_${ENVIRONMENT,,}.log"
+    if [[ -f "$MAIN_LOG" ]]; then
+        log_size=$(du -h "$MAIN_LOG" | cut -f1)
+        log_lines=$(wc -l < "$MAIN_LOG")
+        echo "   Monitor log: $log_size ($log_lines lines)"
+        
+        # Check for recent entries (last 5 minutes)
+        recent_entries=$(grep "$(date -d '5 minutes ago' '+%Y-%m-%d %H:%M')" "$MAIN_LOG" 2>/dev/null | wc -l || echo "0")
+        if [[ "$recent_entries" -gt 0 ]]; then
+            echo -e "   Recent activity: ${GREEN}$recent_entries entries in last 5 minutes${NC}"
+        else
+            echo -e "   Recent activity: ${YELLOW}No entries in last 5 minutes${NC}"
+        fi
+    else
+        echo -e "   Monitor log: ${YELLOW}Not found${NC}"
+    fi
+    
+    # Check metrics files
+    today_metrics="$LOG_DIR/metrics_$(date +%Y%m%d).json"
+    if [[ -f "$today_metrics" ]]; then
+        metrics_size=$(du -h "$today_metrics" | cut -f1)
+        metrics_count=$(jq length "$today_metrics" 2>/dev/null || echo "0")
+        echo "   Today's metrics: $metrics_size ($metrics_count entries)"
+    else
+        echo -e "   Today's metrics: ${YELLOW}Not found${NC}"
+    fi
+else
+    echo -e "❌ ${RED}Log directory not found${NC}"
+fi
+
+# Check configuration files
+echo -e "\n${BLUE}⚙️ Configuration Status:${NC}"
+CONFIG_DIR="/opt/project88/monitoring/config"
+if [[ -d "$CONFIG_DIR" ]]; then
+    echo -e "✅ ${GREEN}Configuration directory exists${NC}"
+    
+    # Check main config
+    if [[ -f "$CONFIG_DIR/monitoring_config.json" ]]; then
+        echo -e "   Config file: ${GREEN}Present${NC}"
+        
+        # Validate JSON
+        if jq empty "$CONFIG_DIR/monitoring_config.json" 2>/dev/null; then
+            echo -e "   JSON validity: ${GREEN}Valid${NC}"
+        else
+            echo -e "   JSON validity: ${RED}Invalid${NC}"
+        fi
+    else
+        echo -e "   Config file: ${RED}Missing${NC}"
+    fi
+    
+    # Check environment file
+    if [[ -f "$CONFIG_DIR/.env" ]]; then
+        echo -e "   Environment file: ${GREEN}Present${NC}"
+        
+        # Check critical variables
+        if grep -q "AWS_ACCESS_KEY_ID" "$CONFIG_DIR/.env" 2>/dev/null; then
+            echo -e "   AWS credentials: ${GREEN}Configured${NC}"
+        else
+            echo -e "   AWS credentials: ${YELLOW}Not found${NC}"
+        fi
+    else
+        echo -e "   Environment file: ${RED}Missing${NC}"
+    fi
+else
+    echo -e "❌ ${RED}Configuration directory not found${NC}"
+fi
+
+# Test AWS SES connectivity
+echo -e "\n${BLUE}📧 Email Service Status:${NC}"
+if command -v python3 >/dev/null 2>&1; then
+    # Quick Python test for AWS SES
+    python3 -c "
+import sys
+sys.path.append('$CONFIG_DIR')
+try:
+    from aws_ses_config import SESEmailSender
+    sender = SESEmailSender()
+    print('✅ AWS SES configuration loaded successfully')
+except ImportError:
+    print('❌ AWS SES module not available')
+except Exception as e:
+    print(f'⚠️ AWS SES configuration issue: {e}')
+" 2>/dev/null
+else
+    echo -e "❌ ${RED}Python3 not available${NC}"
+fi
+
+# Check system resources for monitoring
+echo -e "\n${BLUE}💻 System Resources:${NC}"
+cpu_usage=$(top -bn1 | grep "Cpu(s)" | awk '{print $2}' | cut -d'%' -f1)
+memory_usage=$(free | grep Mem | awk '{printf "%.1f", $3/$2 * 100.0}')
+disk_usage=$(df / | tail -1 | awk '{print $5}' | cut -d'%' -f1)
+
+echo "   CPU usage: ${cpu_usage}%"
+echo "   Memory usage: ${memory_usage}%"
+echo "   Disk usage: ${disk_usage}%"
+
+# Resource status indicators
+if (( $(echo "$cpu_usage < 80" | bc -l) )); then
+    echo -e "   CPU status: ${GREEN}Good${NC}"
+else
+    echo -e "   CPU status: ${YELLOW}High${NC}"
+fi
+
+if (( $(echo "$memory_usage < 85" | bc -l) )); then
+    echo -e "   Memory status: ${GREEN}Good${NC}"
+else
+    echo -e "   Memory status: ${YELLOW}High${NC}"
+fi
+
+if [[ "$disk_usage" -lt 80 ]]; then
+    echo -e "   Disk status: ${GREEN}Good${NC}"
+else
+    echo -e "   Disk status: ${YELLOW}High${NC}"
+fi
+
+# Summary
+echo -e "\n${BLUE}📊 Summary:${NC}"
+if systemctl is-active --quiet project88-monitoring.service && \
+   systemctl is-active --quiet project88-daily-summary.timer && \
+   [[ -f "$CONFIG_DIR/monitoring_config.json" ]] && \
+   [[ -f "$CONFIG_DIR/.env" ]]; then
+    echo -e "✅ ${GREEN}Monitoring system is healthy and operational${NC}"
+    exit 0
+else
+    echo -e "⚠️ ${YELLOW}Monitoring system has some issues that need attention${NC}"
+    exit 1
+fi

@@ -1,0 +1,57 @@
+---
+# PostgreSQL database deployment
+- name: Deploy PostgreSQL container
+  docker_container:
+    name: "project88-postgres-{{ environment }}"
+    image: postgres:15-alpine
+    state: started
+    restart_policy: always
+    ports:
+      - "{{ postgres_port }}:5432"
+    env:
+      POSTGRES_DB: "{{ postgres_db }}"
+      POSTGRES_USER: "{{ postgres_user }}"
+      POSTGRES_PASSWORD: "{{ postgres_password }}"
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - "project88-postgres-{{ environment }}:/var/lib/postgresql/data"
+      - "/etc/localtime:/etc/localtime:ro"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U {{ postgres_user }} -d {{ postgres_db }}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    labels:
+      project88.service: "database"
+      project88.environment: "{{ environment }}"
+  tags: postgres-container
+
+- name: Wait for PostgreSQL to be ready
+  wait_for:
+    host: localhost
+    port: "{{ postgres_port }}"
+    delay: 10
+    timeout: 60
+  tags: postgres-wait
+
+- name: Create Redis container for session management
+  docker_container:
+    name: "project88-redis-{{ environment }}"
+    image: redis:7-alpine
+    state: started
+    restart_policy: always
+    ports:
+      - "{{ redis_port }}:6379"
+    volumes:
+      - "project88-redis-{{ environment }}:/data"
+      - "/etc/localtime:/etc/localtime:ro"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    labels:
+      project88.service: "redis"
+      project88.environment: "{{ environment }}"
+  tags: redis-container

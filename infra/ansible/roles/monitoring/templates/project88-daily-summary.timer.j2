@@ -1,0 +1,16 @@
+[Unit]
+Description=Project88Hub Daily Summary Report Timer
+Documentation=https://github.com/brrm-group/project88-production-repo
+Requires=project88-daily-summary.service
+
+[Timer]
+# Run daily at 8:00 AM Eastern Time
+OnCalendar=*-*-* 08:00:00
+Persistent=true
+AccuracySec=1min
+
+# Randomize start time by up to 10 minutes to avoid resource conflicts
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

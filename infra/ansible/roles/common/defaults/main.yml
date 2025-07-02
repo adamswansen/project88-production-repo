@@ -1,0 +1,21 @@
+---
+# Default variables for common role
+app_user: appuser
+app_group: appuser
+app_base_dir: /opt/project88
+app_log_dir: /var/log/project88
+app_data_dir: /var/lib/project88
+
+system_timezone: UTC
+
+# Fail2ban settings
+fail2ban_bantime: 10m
+fail2ban_findtime: 10m
+fail2ban_maxretry: 5
+enable_app_fail2ban: false
+
+# SSH configuration
+ssh_public_keys: []
+
+# Firewall ports (environment-specific)
+app_ports: []

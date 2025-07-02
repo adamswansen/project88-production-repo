@@ -1,0 +1,146 @@
+---
+# Rollback playbook for Project88 deployments
+# Usage: ansible-playbook playbooks/rollback.yml -i inventory/prod.ini --extra-vars "rollback_tag=v1.2.3"
+
+- name: Rollback Project88 Deployment
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    environment: "{{ 'prod' if inventory_hostname in groups['prod'] else 'dev' }}"
+    rollback_tag: "{{ rollback_tag | default('latest') }}"
+    
+  pre_tasks:
+    - name: Validate rollback parameters
+      fail:
+        msg: "rollback_tag must be specified"
+      when: rollback_tag == "latest"
+      
+    - name: Confirm rollback operation
+      pause:
+        prompt: |
+          ⚠️  ROLLBACK CONFIRMATION ⚠️
+          
+          You are about to rollback Project88 {{ environment }} to tag: {{ rollback_tag }}
+          Host: {{ inventory_hostname }}
+          
+          This will:
+          1. Stop current services
+          2. Deploy previous image tag
+          3. Restart all services
+          
+          Type 'rollback' to confirm
+      register: rollback_confirmation
+      when: not (auto_rollback | default(false))
+      
+    - name: Validate confirmation
+      fail:
+        msg: "Rollback cancelled by user"
+      when: 
+        - not (auto_rollback | default(false))
+        - rollback_confirmation.user_input != 'rollback'
+
+  tasks:
+    - name: Create rollback backup
+      command: >
+        docker tag {{ item.image }}:latest {{ item.image }}:backup-{{ ansible_date_time.epoch }}
+      loop:
+        - { image: "{{ docker_registry }}/provider-integrations" }
+        - { image: "{{ docker_registry }}/race-display" }
+        - { image: "{{ docker_registry }}/timing-collector" }
+        - { image: "{{ docker_registry }}/authentication" }
+      ignore_errors: yes
+      tags: backup
+      
+    - name: Pull rollback images
+      docker_image:
+        name: "{{ item }}"
+        tag: "{{ rollback_tag }}"
+        source: pull
+        force_source: yes
+      loop:
+        - "{{ docker_registry }}/provider-integrations"
+        - "{{ docker_registry }}/race-display" 
+        - "{{ docker_registry }}/timing-collector"
+        - "{{ docker_registry }}/authentication"
+      tags: pull
+      
+    - name: Stop current containers
+      docker_container:
+        name: "{{ item }}"
+        state: stopped
+      loop:
+        - "project88-provider-integrations-{{ environment }}"
+        - "project88-race-display-{{ environment }}"
+        - "project88-timing-collector-{{ environment }}"
+        - "project88-authentication-{{ environment }}"
+      ignore_errors: yes
+      tags: stop
+      
+    - name: Remove current containers
+      docker_container:
+        name: "{{ item }}"
+        state: absent
+      loop:
+        - "project88-provider-integrations-{{ environment }}"
+        - "project88-race-display-{{ environment }}"
+        - "project88-timing-collector-{{ environment }}"
+        - "project88-authentication-{{ environment }}"
+      ignore_errors: yes
+      tags: remove
+      
+    - name: Deploy rolled back containers
+      include_role:
+        name: project88
+        tasks_from: "{{ item }}"
+      loop:
+        - provider_integrations.yml
+        - race_display.yml
+        - timing_collector.yml
+        - authentication.yml
+      vars:
+        docker_tag: "{{ rollback_tag }}"
+      tags: deploy
+      
+    - name: Wait for services to start
+      wait_for:
+        port: "{{ item }}"
+        host: localhost
+        timeout: 60
+      loop:
+        - "{{ race_display_port }}"
+        - "{{ auth_port }}"
+        - "{{ provider_integrations_port }}"
+        - 61611
+      tags: healthcheck
+      
+    - name: Verify rollback health
+      include_tasks: ../test-deployment.yml
+      tags: verify
+      
+  post_tasks:
+    - name: Rollback notification
+      debug:
+        msg: |
+          🔄 Rollback completed successfully!
+          
+          Environment: {{ environment }}
+          Rolled back to: {{ rollback_tag }}
+          Host: {{ inventory_hostname }}
+          
+          Please verify all services are working correctly.
+          
+    - name: Send rollback alert
+      mail:
+        to: ["alex@superracesystems.com", "adam@brrm.com"]
+        subject: "Project88 {{ environment }} Rollback Completed"
+        body: |
+          Project88 {{ environment }} has been rolled back to {{ rollback_tag }}.
+          
+          Host: {{ inventory_hostname }}
+          Timestamp: {{ ansible_date_time.iso8601 }}
+          
+          Please verify system functionality.
+      when: smtp_server is defined
+      tags: notification

@@ -1,0 +1,72 @@
+---
+# Create test data for development environment
+- name: Wait for database to be ready
+  wait_for:
+    port: "{{ postgres_port }}"
+    host: localhost
+    timeout: 60
+
+- name: Create test timing partner
+  postgresql_query:
+    db: "{{ postgres_db }}"
+    login_host: localhost
+    login_port: "{{ postgres_port }}"
+    login_user: "{{ postgres_user }}"
+    login_password: "{{ postgres_password }}"
+    query: |
+      INSERT INTO timing_partners (timing_partner_id, name, contact_email, created_at)
+      VALUES (999, 'Development Test Partner', 'dev@test.com', NOW())
+      ON CONFLICT (timing_partner_id) DO NOTHING;
+  tags: test-timing-partner
+
+- name: Create test user
+  postgresql_query:
+    db: "{{ postgres_db }}"
+    login_host: localhost
+    login_port: "{{ postgres_port }}"
+    login_user: "{{ postgres_user }}"
+    login_password: "{{ postgres_password }}"
+    query: |
+      INSERT INTO users (user_id, username, email, timing_partner_id, created_at)
+      VALUES (1, 'devuser', 'dev@project88hub.com', 999, NOW())
+      ON CONFLICT (user_id) DO NOTHING;
+  tags: test-user
+
+- name: Create test provider configuration
+  postgresql_query:
+    db: "{{ postgres_db }}"
+    login_host: localhost
+    login_port: "{{ postgres_port }}"
+    login_user: "{{ postgres_user }}"
+    login_password: "{{ postgres_password }}"
+    query: |
+      INSERT INTO providers (provider_id, name, api_endpoint, timing_partner_id, is_active, created_at)
+      VALUES 
+      (1, 'RunSignUp', 'https://runsignup.com/Rest/', 999, true, NOW()),
+      (2, 'Race Roster', 'https://www.raceroster.com/api/', 999, true, NOW())
+      ON CONFLICT (provider_id) DO NOTHING;
+  tags: test-providers
+
+- name: Create sample event data
+  postgresql_query:
+    db: "{{ postgres_db }}"
+    login_host: localhost
+    login_port: "{{ postgres_port }}"
+    login_user: "{{ postgres_user }}"
+    login_password: "{{ postgres_password }}"
+    query: |
+      INSERT INTO runsignup_events (event_id, name, event_date, timing_partner_id, created_at)
+      VALUES 
+      (12345, 'Development Test Race 5K', '2024-12-31', 999, NOW()),
+      (12346, 'Development Test Marathon', '2024-12-31', 999, NOW())
+      ON CONFLICT (event_id) DO NOTHING;
+  tags: test-events
+
+- name: Log test data creation
+  debug:
+    msg: |
+      ✅ Test data created successfully:
+      - Timing Partner: Development Test Partner (ID: 999)
+      - Test User: devuser (dev@project88hub.com) 
+      - Providers: RunSignUp, Race Roster
+      - Sample Events: Development Test Race 5K, Development Test Marathon

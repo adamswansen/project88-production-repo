@@ -1,0 +1,96 @@
+# Rollback and testing jobs for Project88Hub CI/CD
+
+# =============================================================================
+# ROLLBACK JOBS - Emergency rollback capabilities
+# =============================================================================
+
+rollback:dev:
+  stage: deploy_dev
+  image: quay.io/ansible/ansible-runner:latest
+  before_script:
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - ssh-keyscan -H $DEV_VPS_IP >> ~/.ssh/known_hosts
+    - cd infra/ansible/
+    - pip install boto3
+  script:
+    - echo "Rolling back development environment..."
+    - echo "$ANSIBLE_VAULT_PASSWORD" > .vault_pass
+    - chmod 600 .vault_pass
+    - |
+      ansible-playbook playbooks/rollback.yml \
+        -i inventory/dev.ini \
+        --vault-password-file .vault_pass \
+        --extra-vars "rollback_tag=${ROLLBACK_TAG:-previous}" \
+        --extra-vars "auto_rollback=true"
+    - rm -f .vault_pass
+  rules:
+    - if: $CI_COMMIT_BRANCH == "dev"
+  when: manual
+  allow_failure: false
+
+rollback:prod:
+  stage: deploy_prod
+  image: quay.io/ansible/ansible-runner:latest
+  before_script:
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - ssh-keyscan -H 69.62.69.90 >> ~/.ssh/known_hosts
+    - cd infra/ansible/
+    - pip install boto3
+  script:
+    - echo "Rolling back PRODUCTION environment..."
+    - echo "$ANSIBLE_VAULT_PASSWORD" > .vault_pass
+    - chmod 600 .vault_pass
+    - |
+      ansible-playbook playbooks/rollback.yml \
+        -i inventory/prod.ini \
+        --vault-password-file .vault_pass \
+        --extra-vars "rollback_tag=${ROLLBACK_TAG:-previous}" \
+        --extra-vars "auto_rollback=true"
+    - rm -f .vault_pass
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  when: manual
+  allow_failure: false
+
+# =============================================================================
+# TESTING JOBS - Infrastructure validation
+# =============================================================================
+
+test:infrastructure:
+  stage: integration
+  image: quay.io/ansible/ansible-runner:latest
+  before_script:
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - cd infra/ansible/
+    - pip install boto3
+  script:
+    - echo "Running infrastructure tests..."
+    - echo "$ANSIBLE_VAULT_PASSWORD" > .vault_pass
+    - chmod 600 .vault_pass
+    - |
+      if [ "$CI_COMMIT_BRANCH" = "main" ]; then
+        INVENTORY="inventory/prod.ini"
+        ssh-keyscan -H 69.62.69.90 >> ~/.ssh/known_hosts
+      else
+        INVENTORY="inventory/dev.ini"
+        ssh-keyscan -H $DEV_VPS_IP >> ~/.ssh/known_hosts
+      fi
+      
+      ansible-playbook test-deployment.yml \
+        -i $INVENTORY \
+        --vault-password-file .vault_pass
+    - rm -f .vault_pass
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "dev"
+  when: manual
+  allow_failure: true

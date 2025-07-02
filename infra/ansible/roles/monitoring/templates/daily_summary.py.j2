@@ -1,0 +1,346 @@
+#!/usr/bin/env python3
+"""
+Project88Hub Daily Summary Report Generator
+Analyzes 24-hour monitoring data and sends comprehensive health summary
+"""
+
+import os
+import sys
+import json
+import glob
+import logging
+from datetime import datetime, timedelta
+from statistics import mean
+from collections import Counter
+
+# Add config directory to path
+sys.path.append('/opt/project88/monitoring/config')
+from aws_ses_config import SESEmailSender
+
+class DailySummaryGenerator:
+    def __init__(self):
+        self.metrics_dir = '/var/log/project88/monitoring'
+        self.email_sender = SESEmailSender()
+        self.setup_logging()
+    
+    def setup_logging(self):
+        """Configure logging"""
+        log_file = f'/var/log/project88/monitoring/daily_summary.log'
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler(log_file),
+                logging.StreamHandler()
+            ]
+        )
+        self.logger = logging.getLogger(__name__)
+    
+    def load_daily_metrics(self, date_str=None):
+        """Load metrics data for a specific date"""
+        if date_str is None:
+            date_str = datetime.now().strftime('%Y%m%d')
+        
+        metrics_file = f'{self.metrics_dir}/metrics_{date_str}.json'
+        
+        try:
+            if os.path.exists(metrics_file):
+                with open(metrics_file, 'r') as f:
+                    return json.load(f)
+            else:
+                self.logger.warning(f"No metrics file found for {date_str}")
+                return []
+        except Exception as e:
+            self.logger.error(f"Error loading metrics for {date_str}: {e}")
+            return []
+    
+    def load_alert_history(self, date_str=None):
+        """Load alert history for the day"""
+        if date_str is None:
+            date_str = datetime.now().strftime('%Y%m%d')
+        
+        alert_file = f'{self.metrics_dir}/alerts_{date_str}.json'
+        
+        try:
+            if os.path.exists(alert_file):
+                with open(alert_file, 'r') as f:
+                    return json.load(f)
+            else:
+                return []
+        except Exception as e:
+            self.logger.error(f"Error loading alerts for {date_str}: {e}")
+            return []
+    
+    def analyze_system_performance(self, metrics_data):
+        """Analyze system performance metrics"""
+        if not metrics_data:
+            return {
+                'avg_cpu': 0,
+                'avg_memory': 0,
+                'avg_disk': 0,
+                'max_cpu': 0,
+                'max_memory': 0,
+                'max_cpu_time': 'N/A',
+                'max_memory_time': 'N/A',
+                'total_checks': 0
+            }
+        
+        cpu_values = []
+        memory_values = []
+        disk_values = []
+        max_cpu = 0
+        max_memory = 0
+        max_cpu_time = 'N/A'
+        max_memory_time = 'N/A'
+        
+        for entry in metrics_data:
+            system = entry.get('system', {})
+            timestamp = entry.get('timestamp', '')
+            
+            if 'cpu_percent' in system:
+                cpu_val = system['cpu_percent']
+                cpu_values.append(cpu_val)
+                if cpu_val > max_cpu:
+                    max_cpu = cpu_val
+                    max_cpu_time = datetime.fromisoformat(timestamp).strftime('%H:%M')
+            
+            if 'memory_percent' in system:
+                memory_val = system['memory_percent']
+                memory_values.append(memory_val)
+                if memory_val > max_memory:
+                    max_memory = memory_val
+                    max_memory_time = datetime.fromisoformat(timestamp).strftime('%H:%M')
+            
+            if 'disk_percent' in system:
+                disk_values.append(system['disk_percent'])
+        
+        return {
+            'avg_cpu': mean(cpu_values) if cpu_values else 0,
+            'avg_memory': mean(memory_values) if memory_values else 0,
+            'avg_disk': mean(disk_values) if disk_values else 0,
+            'max_cpu': max_cpu,
+            'max_memory': max_memory,
+            'max_cpu_time': max_cpu_time,
+            'max_memory_time': max_memory_time,
+            'total_checks': len(metrics_data)
+        }
+    
+    def analyze_service_uptime(self, metrics_data):
+        """Calculate service uptime percentages"""
+        if not metrics_data:
+            return {}
+        
+        service_stats = {}
+        
+        for entry in metrics_data:
+            services = entry.get('services', {})
+            for service_name, status in services.items():
+                if service_name not in service_stats:
+                    service_stats[service_name] = {'total': 0, 'healthy': 0}
+                
+                service_stats[service_name]['total'] += 1
+                if status.get('healthy', False):
+                    service_stats[service_name]['healthy'] += 1
+        
+        # Calculate uptime percentages
+        uptime_percentages = {}
+        for service_name, stats in service_stats.items():
+            if stats['total'] > 0:
+                uptime_pct = (stats['healthy'] / stats['total']) * 100
+                uptime_percentages[service_name] = uptime_pct
+        
+        return uptime_percentages
+    
+    def analyze_alerts(self, alert_data):
+        """Analyze alert patterns and frequency"""
+        if not alert_data:
+            return {
+                'critical_alerts': 0,
+                'warning_alerts': 0,
+                'most_common_issue': 'None',
+                'alerts_sent': 0
+            }
+        
+        alert_types = []
+        alert_issues = []
+        
+        for alert in alert_data:
+            alert_type = alert.get('type', 'unknown')
+            alert_types.append(alert_type)
+            
+            # Extract issue type from message
+            message = alert.get('message', '')
+            if 'CPU' in message:
+                alert_issues.append('High CPU')
+            elif 'Memory' in message:
+                alert_issues.append('High Memory')
+            elif 'Disk' in message:
+                alert_issues.append('High Disk Usage')
+            elif 'Service' in message:
+                alert_issues.append('Service Down')
+            else:
+                alert_issues.append('Other')
+        
+        critical_count = alert_types.count('critical')
+        warning_count = alert_types.count('warning')
+        
+        # Find most common issue
+        if alert_issues:
+            issue_counts = Counter(alert_issues)
+            most_common_issue = issue_counts.most_common(1)[0][0]
+        else:
+            most_common_issue = 'None'
+        
+        return {
+            'critical_alerts': critical_count,
+            'warning_alerts': warning_count,
+            'most_common_issue': most_common_issue,
+            'alerts_sent': len(alert_data)
+        }
+    
+    def calculate_disk_growth(self, metrics_data):
+        """Calculate disk usage growth over 24 hours"""
+        if not metrics_data or len(metrics_data) < 2:
+            return 0
+        
+        # Get first and last disk readings
+        first_entry = metrics_data[0].get('system', {})
+        last_entry = metrics_data[-1].get('system', {})
+        
+        first_disk_free = first_entry.get('disk_free_gb', 0)
+        last_disk_free = last_entry.get('disk_free_gb', 0)
+        
+        # Calculate growth (negative if disk usage increased)
+        disk_growth = last_disk_free - first_disk_free
+        return disk_growth
+    
+    def count_failed_checks(self, metrics_data):
+        """Count failed health checks"""
+        failed_checks = 0
+        
+        for entry in metrics_data:
+            services = entry.get('services', {})
+            for service_name, status in services.items():
+                if not status.get('healthy', True):
+                    failed_checks += 1
+        
+        return failed_checks
+    
+    def generate_summary_data(self, date_str=None):
+        """Generate comprehensive summary data"""
+        self.logger.info(f"Generating daily summary for {date_str or 'today'}")
+        
+        # Load data
+        metrics_data = self.load_daily_metrics(date_str)
+        alert_data = self.load_alert_history(date_str)
+        
+        # Analyze data
+        system_performance = self.analyze_system_performance(metrics_data)
+        service_uptime = self.analyze_service_uptime(metrics_data)
+        alert_analysis = self.analyze_alerts(alert_data)
+        disk_growth = self.calculate_disk_growth(metrics_data)
+        failed_checks = self.count_failed_checks(metrics_data)
+        
+        # Combine into summary
+        summary_data = {
+            **system_performance,
+            'service_uptime': service_uptime,
+            **alert_analysis,
+            'disk_growth': disk_growth,
+            'failed_checks': failed_checks
+        }
+        
+        return summary_data
+    
+    def save_alert_to_history(self, alert_data):
+        """Save alert to daily history file"""
+        date_str = datetime.now().strftime('%Y%m%d')
+        alert_file = f'{self.metrics_dir}/alerts_{date_str}.json'
+        
+        try:
+            # Load existing alerts
+            if os.path.exists(alert_file):
+                with open(alert_file, 'r') as f:
+                    alerts = json.load(f)
+            else:
+                alerts = []
+            
+            # Add new alert
+            alerts.append({
+                'timestamp': datetime.now().isoformat(),
+                **alert_data
+            })
+            
+            # Save updated alerts
+            with open(alert_file, 'w') as f:
+                json.dump(alerts, f, indent=2)
+                
+        except Exception as e:
+            self.logger.error(f"Failed to save alert history: {e}")
+    
+    def send_daily_summary(self, date_str=None):
+        """Generate and send daily summary email"""
+        try:
+            summary_data = self.generate_summary_data(date_str)
+            
+            # Send email via SES
+            result = self.email_sender.send_daily_summary(summary_data)
+            
+            self.logger.info(f"Daily summary sent successfully. Message ID: {result['message_id']}")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Failed to send daily summary: {e}")
+            raise
+    
+    def cleanup_old_metrics(self, days_to_keep=30):
+        """Clean up old metrics files"""
+        try:
+            cutoff_date = datetime.now() - timedelta(days=days_to_keep)
+            
+            # Find all metrics files
+            metrics_pattern = f'{self.metrics_dir}/metrics_*.json'
+            alert_pattern = f'{self.metrics_dir}/alerts_*.json'
+            
+            files_to_check = glob.glob(metrics_pattern) + glob.glob(alert_pattern)
+            
+            for file_path in files_to_check:
+                try:
+                    # Extract date from filename
+                    filename = os.path.basename(file_path)
+                    date_part = filename.split('_')[1].split('.')[0]  # Extract YYYYMMDD
+                    file_date = datetime.strptime(date_part, '%Y%m%d')
+                    
+                    if file_date < cutoff_date:
+                        os.remove(file_path)
+                        self.logger.info(f"Removed old metrics file: {filename}")
+                        
+                except Exception as e:
+                    self.logger.warning(f"Failed to process file {file_path}: {e}")
+                    
+        except Exception as e:
+            self.logger.error(f"Failed to cleanup old metrics: {e}")
+
+if __name__ == "__main__":
+    generator = DailySummaryGenerator()
+    
+    # Handle command line arguments
+    if len(sys.argv) > 1:
+        command = sys.argv[1]
+        
+        if command == '--send':
+            # Send daily summary
+            generator.send_daily_summary()
+        elif command == '--cleanup':
+            # Cleanup old files
+            generator.cleanup_old_metrics()
+        elif command == '--test':
+            # Generate test summary with current data
+            summary_data = generator.generate_summary_data()
+            print(json.dumps(summary_data, indent=2))
+        else:
+            print("Usage: daily_summary.py [--send|--cleanup|--test]")
+            sys.exit(1)
+    else:
+        # Default: send daily summary
+        generator.send_daily_summary()

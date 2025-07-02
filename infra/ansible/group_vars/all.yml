@@ -1,0 +1,63 @@
+# Common variables for all environments
+# Project88Hub Infrastructure Configuration
+
+# Application Configuration
+app_name: project88hub
+app_user: appuser
+app_group: appuser
+
+# Common Services Configuration
+services:
+  race_display:
+    name: race-display
+    repository: "{{ docker_registry }}/race-display"
+    health_endpoint: "/health"
+  
+  chronotrack_collector:
+    name: chronotrack-collector
+    repository: "{{ docker_registry }}/chronotrack-collector"
+    tcp_port: 61611
+    status_port: 61612
+  
+  ai_platform:
+    name: ai-platform
+    repository: "{{ docker_registry }}/ai-platform"
+    health_endpoint: "/health"
+  
+  authentication:
+    name: authentication
+    repository: "{{ docker_registry }}/authentication"
+    health_endpoint: "/health"
+
+# Docker Configuration
+docker_registry: "registry.gitlab.com/brrm-group/project88-racedisplay-project"
+docker_compose_version: "v2.24.0"
+
+# SSL Configuration
+ssl_provider: letsencrypt
+ssl_email: alex@superracesystems.com
+
+# Monitoring Configuration
+monitoring:
+  email_recipients:
+    - alex@superracesystems.com
+    - adam@brrm.com
+  
+  alerts:
+    disk_threshold: 80
+    memory_threshold: 85
+    service_downtime: 60  # seconds
+
+# Backup Configuration
+backup:
+  provider: s3
+  bucket: project88.bu
+  region: us-east-1
+  retention_days: 14
+  
+# Firewall Rules (common ports)
+firewall_rules:
+  - { port: 22, protocol: tcp, rule: allow, comment: "SSH" }
+  - { port: 80, protocol: tcp, rule: allow, comment: "HTTP" }
+  - { port: 443, protocol: tcp, rule: allow, comment: "HTTPS" }
+  - { port: 61611, protocol: tcp, rule: allow, comment: "ChronoTrack TCP" }

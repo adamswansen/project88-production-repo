@@ -1,0 +1,38 @@
+---
+# Authentication service deployment
+- name: Create authentication configuration
+  template:
+    src: authentication.env.j2
+    dest: "{{ app_config_dir }}/authentication.env"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0600'
+  tags: auth-config
+
+- name: Deploy Authentication container
+  docker_container:
+    name: "project88-authentication-{{ environment }}"
+    image: "{{ docker_registry }}/project88/authentication:{{ docker_tag | default('latest') }}"
+    state: started
+    restart_policy: always
+    ports:
+      - "{{ auth_port }}:8000"
+    env_file: "{{ app_config_dir }}/authentication.env"
+    volumes:
+      - "{{ app_log_dir }}:/var/log/project88"
+      - "/etc/localtime:/etc/localtime:ro"
+    networks:
+      - name: "project88-{{ environment }}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    labels:
+      project88.service: "authentication"
+      project88.environment: "{{ environment }}"
+      traefik.enable: "true"
+      traefik.http.routers.authentication-{{ environment }}.rule: "Host(`{{ auth_domain }}`)"
+      traefik.http.services.authentication-{{ environment }}.loadbalancer.server.port: "8000"
+  tags: auth-container

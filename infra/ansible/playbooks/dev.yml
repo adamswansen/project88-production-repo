@@ -1,0 +1,79 @@
+---
+# Development Environment Deployment
+- name: Deploy Project88 to Development
+  hosts: dev
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    environment: dev
+    
+  pre_tasks:
+    - name: Development deployment info
+      debug:
+        msg: |
+          🚀 Deploying to DEVELOPMENT environment
+          - Host: {{ inventory_hostname }}
+          - Environment: {{ environment }}
+          - Database: {{ postgres_db }}
+          - Auto-refresh: {{ dev_refresh_enabled | default(true) }}
+
+  roles:
+    - role: common
+      vars:
+        app_ports:
+          - "{{ race_display_port }}"
+          - "{{ auth_port }}"
+          - "{{ provider_integrations_port }}"
+        enable_app_fail2ban: false
+        system_timezone: "America/New_York"
+      tags: ['common', 'security']
+      
+    - role: docker
+      vars:
+        container_registries:
+          - registry: registry.gitlab.com
+            username: "{{ vault_registry_username }}"
+            password: "{{ vault_registry_password }}"
+      tags: ['docker']
+      
+    - role: project88
+      vars:
+        docker_tag: "{{ deploy_tag | default('develop') }}"
+        ssl_domains:
+          - "{{ race_display_domain }}"
+          - "{{ auth_domain }}"
+          - "{{ provider_integrations_domain }}"
+        deployment_method: docker
+        enable_ssl: false  # SSL optional for dev
+      tags: ['project88', 'applications']
+      
+    - role: backup
+      vars:
+        backup_alert_email: "alex@superracesystems.com"
+        dev_refresh_enabled: true
+        backup_monitor_enabled: true
+      tags: ['backup']
+
+  post_tasks:
+    - name: Create development test data
+      include_tasks: create_test_data.yml
+      when: create_test_data | default(false)
+      tags: test-data
+      
+    - name: Development deployment summary
+      debug:
+        msg: |
+          ✅ Development environment ready!
+          
+          Access URLs:
+          - Race Display: http://{{ race_display_domain }}:{{ race_display_port }}
+          - Authentication: http://{{ auth_domain }}:{{ auth_port }}
+          - Provider API: http://{{ provider_integrations_domain }}:{{ provider_integrations_port }}
+          
+          Development Features:
+          - Database refresh: {{ dev_refresh_enabled | default(true) }}
+          - Test data: {{ create_test_data | default(false) }}
+          - SSL: {{ enable_ssl | default(false) }}
+          
+          Next: Test your applications and integrations!

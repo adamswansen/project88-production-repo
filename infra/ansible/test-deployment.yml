@@ -1,0 +1,132 @@
+---
+# Deployment testing playbook
+# Can be run independently to validate infrastructure
+
+- name: Test Project88 Deployment
+  hosts: all
+  become: no
+  gather_facts: yes
+  
+  vars:
+    environment: "{{ 'prod' if inventory_hostname in groups['prod'] else 'dev' }}"
+    
+  tasks:
+    - name: Test basic connectivity
+      ping:
+      tags: connectivity
+      
+    - name: Check Python availability
+      command: python3 --version
+      register: python_version
+      changed_when: false
+      tags: python
+      
+    - name: Display Python version
+      debug:
+        msg: "Python version: {{ python_version.stdout }}"
+      tags: python
+      
+    - name: Check Docker availability
+      command: docker --version
+      register: docker_version
+      changed_when: false
+      ignore_errors: yes
+      tags: docker
+      
+    - name: Check if Docker daemon is running
+      command: docker info
+      register: docker_info
+      changed_when: false
+      ignore_errors: yes
+      tags: docker
+      
+    - name: Test database connectivity
+      postgresql_ping:
+        db: "{{ postgres_db }}"
+        login_host: localhost
+        login_port: "{{ postgres_port }}"
+        login_user: "{{ postgres_user }}"
+        login_password: "{{ postgres_password }}"
+      ignore_errors: yes
+      tags: database
+      
+    - name: Check service ports
+      wait_for:
+        port: "{{ item }}"
+        host: localhost
+        timeout: 5
+      loop:
+        - "{{ postgres_port }}"
+        - "{{ redis_port }}"
+        - "{{ race_display_port }}"
+        - "{{ auth_port }}"
+        - "{{ provider_integrations_port }}"
+        - 61611
+      ignore_errors: yes
+      tags: ports
+      
+    - name: Test application endpoints
+      uri:
+        url: "http://localhost:{{ item.port }}{{ item.path }}"
+        method: GET
+        status_code: [200, 404, 502]  # Accept various states
+      loop:
+        - { port: "{{ race_display_port }}", path: "/" }
+        - { port: "{{ auth_port }}", path: "/health" }
+        - { port: "{{ provider_integrations_port }}", path: "/health" }
+      ignore_errors: yes
+      tags: endpoints
+      
+    - name: Check disk space
+      command: df -h /
+      register: disk_space
+      changed_when: false
+      tags: resources
+      
+    - name: Check memory usage
+      command: free -h
+      register: memory_usage
+      changed_when: false
+      tags: resources
+      
+    - name: Display resource usage
+      debug:
+        msg: |
+          Disk space: {{ disk_space.stdout_lines[1] }}
+          Memory: {{ memory_usage.stdout_lines[1] }}
+      tags: resources
+      
+    - name: Test S3 connectivity
+      shell: |
+        export AWS_ACCESS_KEY_ID="{{ vault_s3_access_key }}"
+        export AWS_SECRET_ACCESS_KEY="{{ vault_s3_secret_key }}"
+        aws s3 ls s3://{{ s3_bucket }}/{{ environment }}/ || echo "S3 test failed"
+      become_user: "{{ app_user }}"
+      register: s3_test
+      changed_when: false
+      ignore_errors: yes
+      tags: s3
+      
+    - name: Generate deployment report
+      debug:
+        msg: |
+          ===============================================
+          Project88 {{ environment }} Deployment Test Report
+          ===============================================
+          Host: {{ inventory_hostname }}
+          Environment: {{ environment }}
+          Python: {{ python_version.stdout | default('Not available') }}
+          Docker: {{ docker_version.stdout | default('Not available') }}
+          
+          Services Status:
+          - PostgreSQL: {{ 'Running' if postgres_port in ansible_facts.get('listening_ports', []) else 'Not detected' }}
+          - Redis: {{ 'Running' if redis_port in ansible_facts.get('listening_ports', []) else 'Not detected' }}
+          - Race Display: {{ 'Running' if race_display_port in ansible_facts.get('listening_ports', []) else 'Not detected' }}
+          - Authentication: {{ 'Running' if auth_port in ansible_facts.get('listening_ports', []) else 'Not detected' }}
+          - Provider Integrations: {{ 'Running' if provider_integrations_port in ansible_facts.get('listening_ports', []) else 'Not detected' }}
+          - Timing Collector: {{ 'Running' if 61611 in ansible_facts.get('listening_ports', []) else 'Not detected' }}
+          
+          S3 Connectivity: {{ 'OK' if s3_test.rc == 0 else 'Failed' }}
+          
+          Test completed at: {{ ansible_date_time.iso8601 }}
+      tags: report

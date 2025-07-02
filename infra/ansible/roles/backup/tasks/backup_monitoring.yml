@@ -1,0 +1,44 @@
+---
+# Backup monitoring and alerting
+- name: Deploy backup monitoring script
+  template:
+    src: backup_monitor.py.j2
+    dest: "{{ backup_base_dir }}/scripts/backup_monitor.py"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: backup-monitor
+
+- name: Schedule backup monitoring
+  cron:
+    name: "Project88 {{ environment }} backup monitoring"
+    minute: "*/30"
+    job: "{{ backup_base_dir }}/scripts/backup_monitor.py >> {{ backup_base_dir }}/logs/backup_monitor.log 2>&1"
+    user: "{{ app_user }}"
+  tags: monitor-cron
+
+- name: Create backup status endpoint
+  template:
+    src: backup_status.py.j2
+    dest: "{{ backup_base_dir }}/scripts/backup_status.py"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: backup-status
+
+- name: Deploy backup alert script
+  template:
+    src: backup_alert.py.j2
+    dest: "{{ backup_base_dir }}/scripts/backup_alert.py"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  when: backup_alert_email is defined
+  tags: backup-alert
+
+- name: Create backup log rotation configuration
+  template:
+    src: backup-logrotate.conf.j2
+    dest: /etc/logrotate.d/project88-backup
+    mode: '0644'
+  tags: backup-logrotate

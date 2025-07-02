@@ -1,0 +1,49 @@
+---
+# Database management for dev environment data refresh
+- name: Deploy database refresh script for dev environment
+  template:
+    src: dev_db_refresh.py.j2
+    dest: "{{ backup_base_dir }}/scripts/dev_db_refresh.py"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  when: environment == 'dev'
+  tags: dev-db-refresh
+
+- name: Deploy database trimming configuration
+  template:
+    src: db_trim_config.yml.j2
+    dest: "{{ backup_base_dir }}/scripts/db_trim_config.yml"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0644'
+  when: environment == 'dev'
+  tags: db-trim-config
+
+- name: Deploy production database backup script
+  template:
+    src: prod_db_backup.py.j2
+    dest: "{{ backup_base_dir }}/scripts/prod_db_backup.py"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  when: environment == 'prod'
+  tags: prod-db-backup
+
+- name: Create database backup verification script
+  template:
+    src: verify_backup.py.j2
+    dest: "{{ backup_base_dir }}/scripts/verify_backup.py"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: backup-verification
+
+- name: Deploy database restore script
+  template:
+    src: db_restore.py.j2
+    dest: "{{ backup_base_dir }}/scripts/db_restore.py"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: db-restore

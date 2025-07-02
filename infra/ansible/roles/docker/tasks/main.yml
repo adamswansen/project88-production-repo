@@ -1,0 +1,86 @@
+---
+# Docker role - Container platform installation and configuration
+- name: Remove old Docker packages
+  dnf:
+    name:
+      - docker
+      - docker-client
+      - docker-client-latest
+      - docker-common
+      - docker-latest
+      - docker-latest-logrotate
+      - docker-logrotate
+      - docker-engine
+    state: absent
+  tags: docker-cleanup
+
+- name: Add Docker CE repository
+  yum_repository:
+    name: docker-ce-stable
+    description: Docker CE Stable - $basearch
+    baseurl: https://download.docker.com/linux/centos/9/$basearch/stable
+    gpgcheck: yes
+    gpgkey: https://download.docker.com/linux/centos/gpg
+    enabled: yes
+  tags: docker-repo
+
+- name: Install Docker Engine
+  dnf:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    state: present
+  tags: docker-install
+
+- name: Create docker group
+  group:
+    name: docker
+    state: present
+  tags: docker-group
+
+- name: Add app user to docker group
+  user:
+    name: "{{ app_user }}"
+    groups: docker
+    append: yes
+  tags: docker-group
+
+- name: Configure Docker daemon
+  template:
+    src: daemon.json.j2
+    dest: /etc/docker/daemon.json
+    backup: yes
+  notify: restart docker
+  tags: docker-config
+
+- name: Create Docker systemd directory
+  file:
+    path: /etc/systemd/system/docker.service.d
+    state: directory
+    mode: '0755'
+  tags: docker-systemd
+
+- name: Configure Docker systemd service
+  template:
+    src: override.conf.j2
+    dest: /etc/systemd/system/docker.service.d/override.conf
+  notify:
+    - reload systemd
+    - restart docker
+  tags: docker-systemd
+
+- name: Enable and start Docker service
+  systemd:
+    name: docker
+    enabled: yes
+    state: started
+    daemon_reload: yes
+  tags: docker-service
+
+- name: Configure container registry authentication
+  include_tasks: registry_auth.yml
+  when: container_registries is defined
+  tags: docker-registry

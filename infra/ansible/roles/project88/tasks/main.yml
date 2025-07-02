@@ -1,0 +1,55 @@
+---
+# Project88 application deployment role
+- name: Create application directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  loop:
+    - "{{ app_base_dir }}"
+    - "{{ app_base_dir }}/provider-integrations"
+    - "{{ app_base_dir }}/race-display"
+    - "{{ app_base_dir }}/timing-collector"
+    - "{{ app_base_dir }}/authentication"
+    - "{{ app_log_dir }}"
+    - "{{ app_config_dir }}"
+  tags: directories
+
+- name: Setup Docker networks
+  include_tasks: docker_network.yml
+  tags: docker-network
+
+- name: Deploy PostgreSQL database
+  include_tasks: database.yml
+  tags: database
+
+- name: Deploy Provider Integrations service
+  include_tasks: provider_integrations.yml
+  tags: provider-integrations
+
+- name: Deploy Race Display application
+  include_tasks: race_display.yml
+  tags: race-display
+
+- name: Deploy Timing Collector service
+  include_tasks: timing_collector.yml
+  tags: timing-collector
+
+- name: Deploy Authentication service
+  include_tasks: authentication.yml
+  tags: authentication
+
+- name: Configure nginx reverse proxy
+  include_tasks: nginx.yml
+  tags: nginx
+
+- name: Setup health checks
+  include_tasks: health_checks.yml
+  tags: health-checks
+
+- name: Configure SSL certificates
+  include_tasks: ssl.yml
+  when: enable_ssl | default(true)
+  tags: ssl

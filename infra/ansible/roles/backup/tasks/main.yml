@@ -1,0 +1,49 @@
+---
+# Backup role - S3 backup implementation and database management
+- name: Install backup dependencies
+  dnf:
+    name:
+      - python3-pip
+      - postgresql-client
+      - awscli
+    state: present
+  tags: backup-deps
+
+- name: Install Python S3 libraries
+  pip:
+    name:
+      - boto3
+      - botocore
+      - psycopg2-binary
+    state: present
+  tags: backup-python
+
+- name: Create backup directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  loop:
+    - "{{ backup_base_dir }}"
+    - "{{ backup_base_dir }}/scripts"
+    - "{{ backup_base_dir }}/temp"
+    - "{{ backup_base_dir }}/logs"
+  tags: backup-dirs
+
+- name: Deploy S3 backup scripts
+  include_tasks: s3_backup.yml
+  tags: s3-backup
+
+- name: Configure database management
+  include_tasks: database_management.yml
+  tags: database-management
+
+- name: Setup backup scheduling
+  include_tasks: backup_schedule.yml
+  tags: backup-schedule
+
+- name: Configure backup monitoring
+  include_tasks: backup_monitoring.yml
+  tags: backup-monitoring

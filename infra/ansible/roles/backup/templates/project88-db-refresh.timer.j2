@@ -1,0 +1,23 @@
+[Unit]
+Description=Project88Hub Database Refresh Timer
+Documentation=file:///opt/project88/docs/database_refresh.md
+Requires=project88-db-refresh.service
+
+[Timer]
+# Run at 3:00 AM EDT (7:00 AM UTC during DST, 8:00 AM UTC during standard time)
+# Using OnCalendar with timezone specification
+OnCalendar=*-*-* 07:00:00
+Timezone=America/New_York
+
+# Accuracy and persistence
+AccuracySec=5min
+Persistent=true
+
+# Prevent running if system was down
+WakeSystem=false
+
+# Randomize start time by up to 10 minutes to avoid system load spikes
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

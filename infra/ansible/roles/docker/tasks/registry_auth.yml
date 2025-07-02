@@ -1,0 +1,29 @@
+---
+# Container registry authentication
+- name: Create docker config directory for app user
+  file:
+    path: "/home/{{ app_user }}/.docker"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0700'
+  tags: registry-config
+
+- name: Login to container registries
+  docker_login:
+    registry: "{{ item.registry }}"
+    username: "{{ item.username }}"
+    password: "{{ item.password }}"
+    config_path: "/home/{{ app_user }}/.docker/config.json"
+  loop: "{{ container_registries }}"
+  become_user: "{{ app_user }}"
+  no_log: true
+  tags: registry-login
+
+- name: Set proper permissions on Docker config
+  file:
+    path: "/home/{{ app_user }}/.docker/config.json"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0600'
+  tags: registry-permissions

@@ -1,0 +1,253 @@
+#!/usr/bin/env python3
+"""
+AWS SES Email Configuration for Project88Hub Monitoring
+Low-cost email alerts using AWS Simple Email Service
+"""
+
+import boto3
+import os
+from datetime import datetime
+from botocore.exceptions import ClientError
+
+class SESEmailSender:
+    def __init__(self):
+        self.aws_region = '{{ vault_aws_region | default("us-east-1") }}'
+        self.sender_email = '{{ vault_ses_sender_email | default("alerts@project88hub.com") }}'
+        self.recipient_emails = [
+            'alex@superracesystems.com',
+            'adam@brrm.com'
+        ]
+        
+        # Initialize SES client
+        self.ses_client = boto3.client(
+            'ses',
+            region_name=self.aws_region,
+            aws_access_key_id='{{ vault_aws_access_key }}',
+            aws_secret_access_key='{{ vault_aws_secret_key }}'
+        )
+    
+    def send_alert(self, subject, body, alert_type='info'):
+        """Send alert email via AWS SES"""
+        try:
+            # Add environment and server info to subject
+            environment = '{{ "DEV" if inventory_hostname in groups.get("dev", []) else "PROD" }}'
+            server_name = '{{ inventory_hostname }}'
+            
+            formatted_subject = f"[{environment}] {subject}"
+            
+            # Add alert type emoji
+            emoji_map = {
+                'critical': '🚨',
+                'warning': '⚠️',
+                'info': 'ℹ️',
+                'success': '✅'
+            }
+            emoji = emoji_map.get(alert_type.lower(), 'ℹ️')
+            formatted_subject = f"{emoji} {formatted_subject}"
+            
+            # Format body with header
+            formatted_body = f"""
+{emoji} PROJECT88HUB MONITORING ALERT {emoji}
+
+Server: {server_name}
+Environment: {environment}
+Alert Type: {alert_type.upper()}
+Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S EST')}
+
+{'-' * 50}
+
+{body}
+
+{'-' * 50}
+
+This alert was generated automatically by the Project88Hub monitoring system.
+If you need assistance, please contact the DevOps team.
+
+System Location: {server_name}
+Monitoring Version: 1.0
+            """.strip()
+            
+            response = self.ses_client.send_email(
+                Source=self.sender_email,
+                Destination={
+                    'ToAddresses': self.recipient_emails
+                },
+                Message={
+                    'Subject': {
+                        'Data': formatted_subject,
+                        'Charset': 'UTF-8'
+                    },
+                    'Body': {
+                        'Text': {
+                            'Data': formatted_body,
+                            'Charset': 'UTF-8'
+                        }
+                    }
+                }
+            )
+            
+            return {
+                'success': True,
+                'message_id': response['MessageId'],
+                'recipients': self.recipient_emails
+            }
+            
+        except ClientError as e:
+            error_code = e.response['Error']['Code']
+            error_message = e.response['Error']['Message']
+            
+            # Handle common SES errors
+            if error_code == 'MessageRejected':
+                raise Exception(f"Email rejected by SES: {error_message}")
+            elif error_code == 'SendingPausedException':
+                raise Exception("SES sending is paused for this account")
+            elif error_code == 'ConfigurationSetDoesNotExistException':
+                raise Exception("SES configuration set does not exist")
+            else:
+                raise Exception(f"SES error ({error_code}): {error_message}")
+                
+        except Exception as e:
+            raise Exception(f"Failed to send email: {str(e)}")
+    
+    def send_daily_summary(self, summary_data):
+        """Send daily summary report"""
+        try:
+            environment = '{{ "DEV" if inventory_hostname in groups.get("dev", []) else "PROD" }}'
+            server_name = '{{ inventory_hostname }}'
+            
+            subject = f"📊 [{environment}] Daily Health Summary - {datetime.now().strftime('%Y-%m-%d')}"
+            
+            # Calculate summary statistics
+            total_checks = summary_data.get('total_checks', 0)
+            failed_checks = summary_data.get('failed_checks', 0)
+            avg_cpu = summary_data.get('avg_cpu', 0)
+            avg_memory = summary_data.get('avg_memory', 0)
+            avg_disk = summary_data.get('avg_disk', 0)
+            service_uptime = summary_data.get('service_uptime', {})
+            alerts_sent = summary_data.get('alerts_sent', 0)
+            
+            # Determine overall health status
+            if failed_checks == 0 and alerts_sent == 0:
+                health_status = "🟢 EXCELLENT"
+                health_emoji = "🟢"
+            elif failed_checks < total_checks * 0.05:  # Less than 5% failures
+                health_status = "🟡 GOOD"
+                health_emoji = "🟡"
+            else:
+                health_status = "🔴 NEEDS ATTENTION"
+                health_emoji = "🔴"
+            
+            body = f"""
+{health_emoji} PROJECT88HUB DAILY HEALTH SUMMARY {health_emoji}
+
+Server: {server_name}
+Environment: {environment}
+Date: {datetime.now().strftime('%Y-%m-%d')}
+Overall Health: {health_status}
+
+{'=' * 60}
+
+📊 SYSTEM PERFORMANCE (24-hour averages):
+• CPU Usage: {avg_cpu:.1f}%
+• Memory Usage: {avg_memory:.1f}%
+• Disk Usage: {avg_disk:.1f}%
+
+🔍 MONITORING STATISTICS:
+• Total Health Checks: {total_checks:,}
+• Failed Checks: {failed_checks:,}
+• Success Rate: {((total_checks - failed_checks) / total_checks * 100) if total_checks > 0 else 0:.2f}%
+• Alerts Sent: {alerts_sent}
+
+🏥 SERVICE UPTIME (24 hours):"""
+            
+            for service_name, uptime_pct in service_uptime.items():
+                uptime_emoji = "🟢" if uptime_pct >= 99.9 else "🟡" if uptime_pct >= 99.0 else "🔴"
+                body += f"\n• {uptime_emoji} {service_name}: {uptime_pct:.2f}%"
+            
+            # Add performance trends
+            body += f"""
+
+📈 PERFORMANCE TRENDS:
+• Peak CPU: {summary_data.get('max_cpu', 0):.1f}% at {summary_data.get('max_cpu_time', 'N/A')}
+• Peak Memory: {summary_data.get('max_memory', 0):.1f}% at {summary_data.get('max_memory_time', 'N/A')}
+• Disk Growth: {summary_data.get('disk_growth', 0):.2f} GB in last 24h
+
+🚨 ALERT SUMMARY:
+• Critical Alerts: {summary_data.get('critical_alerts', 0)}
+• Warning Alerts: {summary_data.get('warning_alerts', 0)}
+• Most Common Issue: {summary_data.get('most_common_issue', 'None')}
+
+💰 ESTIMATED COSTS (24 hours):
+• AWS SES: ~$0.10 per 1,000 emails
+• Total Monitoring Cost: <$0.01/day
+
+{'=' * 60}
+
+🔗 USEFUL LINKS:
+• Server Health Dashboard: https://{'dev.' if environment == 'DEV' else ''}project88hub.com/health
+• Monitoring Logs: /var/log/project88/monitoring/
+• GitLab Pipeline: https://gitlab.com/brrm-group/project88-racedisplay-project
+
+📞 SUPPORT:
+Primary: alex@superracesystems.com
+Secondary: adam@brrm.com
+Emergency: Check server console at Hostinger panel
+
+---
+This summary is generated automatically every day at 8:00 AM EST.
+To modify reporting frequency or recipients, update the monitoring configuration.
+
+System: Project88Hub Monitoring v1.0
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S EST')}
+            """.strip()
+            
+            return self.send_alert(
+                subject=f"Daily Health Summary - {datetime.now().strftime('%Y-%m-%d')}",
+                body=body,
+                alert_type='info'
+            )
+            
+        except Exception as e:
+            raise Exception(f"Failed to send daily summary: {str(e)}")
+    
+    def test_email_configuration(self):
+        """Test email configuration and SES setup"""
+        try:
+            test_subject = "🧪 Project88Hub Monitoring Test"
+            test_body = f"""
+This is a test email from the Project88Hub monitoring system.
+
+Server: {{ inventory_hostname }}
+Environment: {{ "DEV" if inventory_hostname in groups.get("dev", []) else "PROD" }}
+Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S EST')}
+
+If you received this email, the monitoring system is configured correctly and ready to send alerts.
+
+Configuration Details:
+• AWS Region: {self.aws_region}
+• Sender Email: {self.sender_email}
+• Recipients: {', '.join(self.recipient_emails)}
+
+The monitoring system will now begin sending:
+• Real-time alerts for critical issues
+• Daily summary reports at 8:00 AM EST
+
+Test completed successfully! ✅
+            """.strip()
+            
+            result = self.send_alert(test_subject, test_body, 'success')
+            return result
+            
+        except Exception as e:
+            raise Exception(f"Email test failed: {str(e)}")
+
+if __name__ == "__main__":
+    # Test the email configuration
+    sender = SESEmailSender()
+    try:
+        result = sender.test_email_configuration()
+        print(f"✅ Email test successful! Message ID: {result['message_id']}")
+        print(f"📧 Recipients: {', '.join(result['recipients'])}")
+    except Exception as e:
+        print(f"❌ Email test failed: {e}")
+        exit(1)

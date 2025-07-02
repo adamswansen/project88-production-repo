@@ -1,0 +1,112 @@
+#!/bin/bash
+# Overall health check script for Project88 - {{ environment }}
+
+HEALTH_DIR="{{ app_base_dir }}/health-checks"
+TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+LOG_PREFIX="[$TIMESTAMP] HEALTH_CHECK"
+
+echo "$LOG_PREFIX: Starting overall health check for {{ environment }} environment"
+
+# Run individual health checks
+CHECKS=(
+    "$HEALTH_DIR/check_database.sh:Database"
+    "$HEALTH_DIR/check_services.sh:Services"
+    "$HEALTH_DIR/check_ports.sh:Network"
+)
+
+FAILED_CHECKS=0
+TOTAL_CHECKS=${#CHECKS[@]}
+
+for check_info in "${CHECKS[@]}"; do
+    IFS=':' read -r script name <<< "$check_info"
+    
+    if [ -x "$script" ]; then
+        echo "$LOG_PREFIX: Running $name check..."
+        if $script; then
+            echo "$LOG_PREFIX: ✅ $name check passed"
+        else
+            echo "$LOG_PREFIX: ❌ $name check failed"
+            FAILED_CHECKS=$((FAILED_CHECKS + 1))
+        fi
+    else
+        echo "$LOG_PREFIX: ⚠️  $name check script not found or not executable"
+        FAILED_CHECKS=$((FAILED_CHECKS + 1))
+    fi
+    echo ""
+done
+
+# System resource checks
+echo "$LOG_PREFIX: Checking system resources..."
+
+# Disk usage
+DISK_USAGE=$(df -h / | awk 'NR==2 {print $5}' | sed 's/%//')
+if [ "$DISK_USAGE" -gt 80 ]; then
+    echo "$LOG_PREFIX: ⚠️  High disk usage: ${DISK_USAGE}%"
+    FAILED_CHECKS=$((FAILED_CHECKS + 1))
+else
+    echo "$LOG_PREFIX: ✅ Disk usage: ${DISK_USAGE}%"
+fi
+
+# Memory usage
+MEMORY_USAGE=$(free | awk 'NR==2{printf "%.0f", $3*100/$2}')
+if [ "$MEMORY_USAGE" -gt 85 ]; then
+    echo "$LOG_PREFIX: ⚠️  High memory usage: ${MEMORY_USAGE}%"
+    FAILED_CHECKS=$((FAILED_CHECKS + 1))
+else
+    echo "$LOG_PREFIX: ✅ Memory usage: ${MEMORY_USAGE}%"
+fi
+
+# Load average
+LOAD_AVG=$(uptime | awk -F'load average:' '{print $2}' | awk '{print $1}' | sed 's/,//')
+LOAD_THRESHOLD={{ 8 if environment == 'prod' else 4 }}
+if (( $(echo "$LOAD_AVG > $LOAD_THRESHOLD" | bc -l) )); then
+    echo "$LOG_PREFIX: ⚠️  High load average: $LOAD_AVG"
+    FAILED_CHECKS=$((FAILED_CHECKS + 1))
+else
+    echo "$LOG_PREFIX: ✅ Load average: $LOAD_AVG"
+fi
+
+# Docker system check
+if command -v docker &> /dev/null; then
+    if docker system df &> /dev/null; then
+        echo "$LOG_PREFIX: ✅ Docker system accessible"
+    else
+        echo "$LOG_PREFIX: ❌ Docker system issues detected"
+        FAILED_CHECKS=$((FAILED_CHECKS + 1))
+    fi
+else
+    echo "$LOG_PREFIX: ❌ Docker not available"
+    FAILED_CHECKS=$((FAILED_CHECKS + 1))
+fi
+
+# Generate health report
+echo ""
+echo "$LOG_PREFIX: ==============================================="
+echo "$LOG_PREFIX: Project88 {{ environment }} Health Report"
+echo "$LOG_PREFIX: ==============================================="
+echo "$LOG_PREFIX: Timestamp: $TIMESTAMP"
+echo "$LOG_PREFIX: Environment: {{ environment }}"
+echo "$LOG_PREFIX: Host: $(hostname)"
+echo "$LOG_PREFIX: Checks completed: $TOTAL_CHECKS"
+echo "$LOG_PREFIX: Failed checks: $FAILED_CHECKS"
+
+if [ $FAILED_CHECKS -eq 0 ]; then
+    echo "$LOG_PREFIX: 🎉 ALL SYSTEMS HEALTHY"
+    # Create healthy status file
+    echo "$TIMESTAMP" > /tmp/project88_health_ok
+    exit 0
+else
+    echo "$LOG_PREFIX: ⚠️  $FAILED_CHECKS ISSUES DETECTED"
+    # Remove healthy status file if it exists
+    rm -f /tmp/project88_health_ok
+    
+    # Send alert if configured
+    {% if backup_alert_email is defined %}
+    if [ $FAILED_CHECKS -gt 2 ]; then
+        echo "Critical health issues detected on {{ environment }} environment. $FAILED_CHECKS checks failed." | \
+        mail -s "Project88 {{ environment }} Health Alert" {{ backup_alert_email }}
+    fi
+    {% endif %}
+    
+    exit 1
+fi

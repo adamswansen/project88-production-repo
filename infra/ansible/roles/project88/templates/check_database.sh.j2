@@ -1,0 +1,43 @@
+#!/bin/bash
+# Database health check script for Project88 - {{ environment }}
+
+DB_HOST="{{ postgres_host | default('localhost') }}"
+DB_PORT="{{ postgres_port }}"
+DB_NAME="{{ postgres_db }}"
+DB_USER="{{ postgres_user }}"
+TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+LOG_PREFIX="[$TIMESTAMP] DB_CHECK"
+
+# Test database connection
+export PGPASSWORD="{{ postgres_password }}"
+if pg_isready -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" > /dev/null 2>&1; then
+    echo "$LOG_PREFIX: PostgreSQL is accepting connections"
+    
+    # Test query execution
+    if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1;" > /dev/null 2>&1; then
+        echo "$LOG_PREFIX: Database queries working normally"
+        
+        # Check critical tables exist
+        TABLES=("timing_partners" "providers" "users")
+        for table in "${TABLES[@]}"; do
+            if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1 FROM $table LIMIT 1;" > /dev/null 2>&1; then
+                echo "$LOG_PREFIX: Table $table accessible"
+            else
+                echo "$LOG_PREFIX: WARNING - Table $table not accessible"
+                exit 1
+            fi
+        done
+        
+        # Check database size
+        DB_SIZE=$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -t -c "SELECT pg_size_pretty(pg_database_size('$DB_NAME'));" | xargs)
+        echo "$LOG_PREFIX: Database size: $DB_SIZE"
+        
+        exit 0
+    else
+        echo "$LOG_PREFIX: ERROR - Cannot execute queries"
+        exit 1
+    fi
+else
+    echo "$LOG_PREFIX: ERROR - PostgreSQL not accepting connections"
+    exit 1
+fi

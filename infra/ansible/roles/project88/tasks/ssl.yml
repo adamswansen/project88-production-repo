@@ -1,0 +1,36 @@
+---
+# SSL certificate management with Let's Encrypt
+- name: Install certbot
+  dnf:
+    name:
+      - certbot
+      - python3-certbot-nginx
+    state: present
+  tags: ssl-install
+
+- name: Generate SSL certificates
+  command: >
+    certbot --nginx --non-interactive --agree-tos 
+    --email {{ ssl_email | default('admin@' + primary_domain) }}
+    -d {{ item }}
+  loop: "{{ ssl_domains }}"
+  when: ssl_domains is defined
+  register: certbot_result
+  failed_when: certbot_result.rc != 0 and "Certificate already exists" not in certbot_result.stderr
+  tags: ssl-generate
+
+- name: Setup SSL certificate renewal cron job
+  cron:
+    name: "Renew SSL certificates"
+    minute: "0"
+    hour: "2"
+    job: "certbot renew --quiet && systemctl reload nginx >> /var/log/certbot-renew.log 2>&1"
+    user: root
+  tags: ssl-renewal
+
+- name: Test SSL certificate renewal
+  command: certbot renew --dry-run
+  register: ssl_test
+  changed_when: false
+  failed_when: ssl_test.rc != 0
+  tags: ssl-test
