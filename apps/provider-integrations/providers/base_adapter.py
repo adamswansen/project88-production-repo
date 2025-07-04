@@ -13,9 +13,15 @@ import requests
 import time
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import pickle
+import os
 
 logger = logging.getLogger('ProviderAdapter')
 
+# Global shared rate limiters for each provider
+_SHARED_RATE_LIMITERS = {}
+
+@dataclass
 @dataclass
 class ProviderEvent:
     """Standardized event data structure"""
@@ -36,6 +42,64 @@ class ProviderEvent:
     currency: Optional[str]
     status: Optional[str]
     raw_data: Dict
+
+    def to_dict(self) -> Dict:
+        """Convert ProviderEvent to dictionary with proper datetime serialization"""
+        from dataclasses import asdict
+        result = asdict(self)
+        
+        # Convert datetime objects to ISO strings
+        datetime_fields = [
+            'event_date', 'event_end_date', 'registration_open_date', 
+            'registration_close_date'
+        ]
+        
+        for field in datetime_fields:
+            if field in result and result[field] is not None:
+                if hasattr(result[field], 'isoformat'):
+                    result[field] = result[field].isoformat()
+        
+        return result
+
+    def to_dict(self) -> Dict:
+        """Convert ProviderEvent to dictionary with proper datetime serialization"""
+        from dataclasses import asdict
+        result = asdict(self)
+        
+        # Convert datetime objects to ISO strings
+        datetime_fields = [
+            'event_date', 'event_end_date', 'registration_open_date', 
+            'registration_close_date'
+        ]
+        
+        for field in datetime_fields:
+            if field in result and result[field] is not None:
+                if hasattr(result[field], 'isoformat'):
+                    result[field] = result[field].isoformat()
+        
+        return result
+    
+    def to_dict(self) -> Dict:
+        """Convert ProviderEvent to dictionary for storage"""
+        return {
+            'provider_event_id': self.provider_event_id,
+            'event_name': self.event_name,
+            'event_description': self.event_description,
+            'event_date': self.event_date,
+            'event_end_date': self.event_end_date,
+            'location_name': self.location_name,
+            'location_city': self.location_city,
+            'location_state': self.location_state,
+            'event_type': self.event_type,
+            'distance': self.distance,
+            'max_participants': self.max_participants,
+            'registration_open_date': self.registration_open_date,
+            'registration_close_date': self.registration_close_date,
+            'registration_fee': self.registration_fee,
+            'currency': self.currency,
+            'status': self.status,
+            'raw_data': self.raw_data
+        }
 
 @dataclass
 class ProviderParticipant:
@@ -61,6 +125,32 @@ class ProviderParticipant:
     payment_status: Optional[str]
     amount_paid: Optional[float]
     raw_data: Dict
+    
+    def to_dict(self) -> Dict:
+        """Convert ProviderParticipant to dictionary for storage"""
+        return {
+            'provider_participant_id': self.provider_participant_id,
+            'event_id': self.event_id,
+            'bib_number': self.bib_number,
+            'first_name': self.first_name,
+            'last_name': self.last_name,
+            'email': self.email,
+            'phone': self.phone,
+            'date_of_birth': self.date_of_birth,
+            'gender': self.gender,
+            'age': self.age,
+            'city': self.city,
+            'state': self.state,
+            'country': self.country,
+            'emergency_contact': self.emergency_contact,
+            'team_name': self.team_name,
+            'division': self.division,
+            'registration_date': self.registration_date,
+            'registration_status': self.registration_status,
+            'payment_status': self.payment_status,
+            'amount_paid': self.amount_paid,
+            'raw_data': self.raw_data
+        }
 
 @dataclass
 class SyncResult:
@@ -77,38 +167,90 @@ class SyncResult:
     last_modified_filter: Optional[datetime]
 
 class RateLimiter:
-    """Simple rate limiter for API calls"""
+    """Simple rate limiter for API calls with persistence"""
     
-    def __init__(self, max_calls_per_hour: int):
+    def __init__(self, max_calls_per_hour: int, provider_name: str = "default"):
         self.max_calls_per_hour = max_calls_per_hour
-        self.calls = []
+        self.provider_name = provider_name
+        self.cache_file = f"/tmp/rate_limiter_{provider_name.lower()}.pkl"
+        self.calls = self._load_calls()
+        
+    def _load_calls(self) -> List[datetime]:
+        """Load call history from disk"""
+        try:
+            if os.path.exists(self.cache_file):
+                with open(self.cache_file, 'rb') as f:
+                    calls = pickle.load(f)
+                    # Only keep calls from last hour
+                    now = datetime.now()
+                    calls = [call for call in calls if (now - call).total_seconds() < 3600]
+                    return calls
+        except Exception as e:
+            logger.warning(f"Failed to load rate limiter cache: {e}")
+        return []
+    
+    def _save_calls(self):
+        """Save call history to disk"""
+        try:
+            with open(self.cache_file, 'wb') as f:
+                pickle.dump(self.calls, f)
+        except Exception as e:
+            logger.warning(f"Failed to save rate limiter cache: {e}")
         
     def wait_if_needed(self):
         """Wait if rate limit would be exceeded"""
         now = datetime.now()
         
         # Remove calls older than 1 hour
+        old_calls_count = len(self.calls)
         self.calls = [call_time for call_time in self.calls 
                      if (now - call_time).total_seconds() < 3600]
+        new_calls_count = len(self.calls)
         
-        # Check if we're at the limit
+        if old_calls_count != new_calls_count:
+            logger.info(f"Rate limiter ({self.provider_name}): Removed {old_calls_count - new_calls_count} old calls, {new_calls_count} recent calls remaining")
+        
+        # Check if we're at the limit BEFORE making the call
+        logger.info(f"Rate limiter ({self.provider_name}): {new_calls_count}/{self.max_calls_per_hour} calls in last hour")
+        
+        # Wait if we would exceed the limit by making this call
         if len(self.calls) >= self.max_calls_per_hour:
             # Wait until the oldest call is more than 1 hour old
             oldest_call = min(self.calls)
             wait_time = 3600 - (now - oldest_call).total_seconds()
             if wait_time > 0:
-                logger.warning(f"Rate limit reached, waiting {wait_time:.1f} seconds")
+                logger.warning(f"Rate limit reached for {self.provider_name}, waiting {wait_time:.1f} seconds")
                 time.sleep(wait_time)
+                
+                # After waiting, refresh the call list and get new 'now' time
+                now = datetime.now()
+                self.calls = [call_time for call_time in self.calls 
+                             if (now - call_time).total_seconds() < 3600]
+                logger.info(f"Rate limiter ({self.provider_name}): After wait, {len(self.calls)}/{self.max_calls_per_hour} calls remaining")
         
         # Record this call
         self.calls.append(now)
+        self._save_calls()
+        logger.debug(f"Rate limiter ({self.provider_name}): Recorded API call, total calls: {len(self.calls)}")
+        
+        # Mandatory sleep to ensure we never exceed rate limits (1000 calls/hour = ~4 seconds per call)
+        time.sleep(4)
+        logger.debug(f"Rate limiter ({self.provider_name}): Sleeping 4 seconds to prevent rate limit")
+
+def get_shared_rate_limiter(provider_name: str, max_calls_per_hour: int) -> RateLimiter:
+    """Get or create a shared rate limiter for a provider"""
+    if provider_name not in _SHARED_RATE_LIMITERS:
+        _SHARED_RATE_LIMITERS[provider_name] = RateLimiter(max_calls_per_hour, provider_name)
+    return _SHARED_RATE_LIMITERS[provider_name]
 
 class BaseProviderAdapter(ABC):
     """Base class for all provider adapters"""
     
     def __init__(self, credentials: Dict[str, Any], rate_limit_per_hour: int = 1000):
         self.credentials = credentials
-        self.rate_limiter = RateLimiter(rate_limit_per_hour)
+        # Use shared rate limiter based on provider name
+        provider_name = self.get_provider_name()
+        self.rate_limiter = get_shared_rate_limiter(provider_name, rate_limit_per_hour)
         self.logger = logging.getLogger(f"Provider.{self.__class__.__name__}")
         
         # Setup HTTP session with retries
@@ -316,9 +458,26 @@ class BaseProviderAdapter(ABC):
         except (KeyError, TypeError, AttributeError):
             return default
     
-    def _parse_datetime(self, date_str: str, formats: List[str] = None) -> Optional[datetime]:
-        """Parse datetime string with multiple format attempts"""
-        if not date_str:
+    def _parse_datetime(self, date_value, formats: List[str] = None) -> Optional[datetime]:
+        """Parse datetime from string, integer timestamp, or datetime object"""
+        if not date_value:
+            return None
+        
+        # If it's already a datetime object, return it as-is
+        if isinstance(date_value, datetime):
+            return date_value
+        
+        # If it's an integer, treat it as a Unix timestamp
+        if isinstance(date_value, int):
+            try:
+                return datetime.fromtimestamp(date_value)
+            except (ValueError, OSError) as e:
+                self.logger.warning(f"Could not parse timestamp {date_value}: {e}")
+                return None
+        
+        # If it's not a string at this point, we can't parse it
+        if not isinstance(date_value, str):
+            self.logger.warning(f"Unexpected date type: {type(date_value)} - {date_value}")
             return None
             
         if formats is None:
@@ -341,9 +500,9 @@ class BaseProviderAdapter(ABC):
         
         for fmt in formats:
             try:
-                return datetime.strptime(date_str, fmt)
+                return datetime.strptime(date_value, fmt)
             except ValueError:
                 continue
         
-        self.logger.warning(f"Could not parse datetime: {date_str}")
+        self.logger.warning(f"Could not parse datetime: {date_value}")
         return None 

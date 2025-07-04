@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 import base64
 import hashlib
+import json
 
 from .base_adapter import BaseProviderAdapter, ProviderEvent, ProviderParticipant
 
@@ -18,7 +19,7 @@ class RunSignUpAdapter(BaseProviderAdapter):
     BASE_URL = "https://runsignup.com/REST"
     
     def __init__(self, credentials: Dict[str, Any], timing_partner_id: int = None):
-        super().__init__(credentials, rate_limit_per_hour=1000)
+        super().__init__(credentials, rate_limit_per_hour=1000)  # Back to production limit
         self.timing_partner_id = timing_partner_id
         self.api_key = credentials.get('principal')  # API Key
         self.api_secret = credentials.get('secret')   # API Secret
@@ -267,7 +268,6 @@ class RunSignUpAdapter(BaseProviderAdapter):
         address = race_data.get('address', {})
         
         # Insert or update race using PostgreSQL syntax with JSONB address
-        import json
         cursor.execute("""
             INSERT INTO runsignup_races (
                 race_id, name, last_date, last_end_date, next_date, next_end_date,
@@ -391,172 +391,248 @@ class RunSignUpAdapter(BaseProviderAdapter):
         return event_data.get('event_id')
     
     def store_participant(self, participant_data: Dict, race_id: int, event_id: int, db_connection):
-        """Store participant data in runsignup_participants table"""
-        from datetime import datetime
-        
+        """Store participant data in database with proper duplicate handling"""
         cursor = db_connection.cursor()
         
-        # Handle both direct participant data and nested user data structures
-        if 'user' in participant_data:
-            user_data = participant_data.get('user', {})
-        else:
-            # If no user nesting, treat participant_data as user data
-            user_data = participant_data
-        
-        # Prepare data for JSONB storage
-        import json
-        
-        # Prepare address data as JSON - handle multiple possible structures
-        address_data = {}
-        if 'address' in user_data and user_data['address']:
-            address_data = {
-                'street': user_data['address'].get('street'),
-                'city': user_data['address'].get('city'),
-                'state': user_data['address'].get('state'),
-                'zipcode': user_data['address'].get('zipcode'),
-                'country_code': user_data['address'].get('country_code')
-            }
-        else:
-            # Check for flat structure address fields
-            address_data = {
-                'street': user_data.get('street'),
-                'city': user_data.get('city'),
-                'state': user_data.get('state'),
-                'zipcode': user_data.get('zipcode'),
-                'country_code': user_data.get('country_code')
-            }
-        
-        # Address data is the only JSON field we're still using
-        
+        # Check if participant already exists using registration_id and timing_partner_id
         cursor.execute("""
-            INSERT INTO runsignup_participants (
-                race_id, event_id, registration_id, user_id, first_name, middle_name, last_name,
-                email, address, dob, gender, phone, profile_image_url,
-                bib_num, chip_num, age, registration_date, 
-                team_id, team_name, team_type_id, team_type, team_gender, team_bib_num,
-                race_fee, offline_payment_amount, processing_fee, processing_fee_paid_by_user, 
-                processing_fee_paid_by_race, partner_fee, affiliate_profit, extra_fees, amount_paid,
-                rsu_transaction_id, transaction_id, usatf_discount_amount_in_cents, 
-                usatf_discount_additional_field, giveaway, giveaway_option_id,
-                fundraiser_id, fundraiser_charity_id, fundraiser_charity_name, team_fundraiser_id,
-                multi_race_bundle_id, multi_race_bundle, signed_waiver_details, imported,
-                last_modified, fetched_date, credentials_used, timing_partner_id
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (registration_id) DO UPDATE SET
-                race_id = EXCLUDED.race_id,
-                event_id = EXCLUDED.event_id,
-                user_id = EXCLUDED.user_id,
-                first_name = EXCLUDED.first_name,
-                middle_name = EXCLUDED.middle_name,
-                last_name = EXCLUDED.last_name,
-                email = EXCLUDED.email,
-                address = EXCLUDED.address,
-                dob = EXCLUDED.dob,
-                gender = EXCLUDED.gender,
-                phone = EXCLUDED.phone,
-                profile_image_url = EXCLUDED.profile_image_url,
-                bib_num = EXCLUDED.bib_num,
-                chip_num = EXCLUDED.chip_num,
-                age = EXCLUDED.age,
-                registration_date = EXCLUDED.registration_date,
-                team_id = EXCLUDED.team_id,
-                team_name = EXCLUDED.team_name,
-                team_type_id = EXCLUDED.team_type_id,
-                team_type = EXCLUDED.team_type,
-                team_gender = EXCLUDED.team_gender,
-                team_bib_num = EXCLUDED.team_bib_num,
-                race_fee = EXCLUDED.race_fee,
-                offline_payment_amount = EXCLUDED.offline_payment_amount,
-                processing_fee = EXCLUDED.processing_fee,
-                processing_fee_paid_by_user = EXCLUDED.processing_fee_paid_by_user,
-                processing_fee_paid_by_race = EXCLUDED.processing_fee_paid_by_race,
-                partner_fee = EXCLUDED.partner_fee,
-                affiliate_profit = EXCLUDED.affiliate_profit,
-                extra_fees = EXCLUDED.extra_fees,
-                amount_paid = EXCLUDED.amount_paid,
-                rsu_transaction_id = EXCLUDED.rsu_transaction_id,
-                transaction_id = EXCLUDED.transaction_id,
-                usatf_discount_amount_in_cents = EXCLUDED.usatf_discount_amount_in_cents,
-                usatf_discount_additional_field = EXCLUDED.usatf_discount_additional_field,
-                giveaway = EXCLUDED.giveaway,
-                giveaway_option_id = EXCLUDED.giveaway_option_id,
-                fundraiser_id = EXCLUDED.fundraiser_id,
-                fundraiser_charity_id = EXCLUDED.fundraiser_charity_id,
-                fundraiser_charity_name = EXCLUDED.fundraiser_charity_name,
-                team_fundraiser_id = EXCLUDED.team_fundraiser_id,
-                multi_race_bundle_id = EXCLUDED.multi_race_bundle_id,
-                multi_race_bundle = EXCLUDED.multi_race_bundle,
-                signed_waiver_details = EXCLUDED.signed_waiver_details,
-                imported = EXCLUDED.imported,
-                last_modified = EXCLUDED.last_modified,
-                fetched_date = EXCLUDED.fetched_date
-        """, (
-            race_id,
-            event_id,
-            participant_data.get('registration_id'),
-            user_data.get('user_id'),
-            user_data.get('first_name'),
-            user_data.get('middle_name'),
-            user_data.get('last_name'),
-            user_data.get('email'),
-            json.dumps(address_data) if any(address_data.values()) else None,
-            user_data.get('dob'),
-            user_data.get('gender'),
-            user_data.get('phone'),
-            user_data.get('profile_image_url'),
-            participant_data.get('bib_num'),
-            participant_data.get('chip_num'),
-            participant_data.get('age'),
-            self._parse_runsignup_date(participant_data.get('registration_date')),
-            # Team fields
-            participant_data.get('team_id'),
-            participant_data.get('team_name'),
-            participant_data.get('team_type_id'),
-            participant_data.get('team_type'),
-            participant_data.get('team_gender'),
-            participant_data.get('team_bib_num'),
-            # Payment fields with currency conversion
-            self._clean_currency_string(participant_data.get('race_fee')),
-            self._clean_currency_string(participant_data.get('offline_payment_amount')),
-            self._clean_currency_string(participant_data.get('processing_fee')),
-            self._clean_currency_string(participant_data.get('processing_fee_paid_by_user')),
-            self._clean_currency_string(participant_data.get('processing_fee_paid_by_race')),
-            self._clean_currency_string(participant_data.get('partner_fee')),
-            self._clean_currency_string(participant_data.get('affiliate_profit')),
-            self._clean_currency_string(participant_data.get('extra_fees')),
-            self._clean_currency_string(participant_data.get('amount_paid')),
-            # Transaction and additional fields
-            participant_data.get('rsu_transaction_id'),
-            participant_data.get('transaction_id'),
-            participant_data.get('usatf_discount_amount_in_cents'),
-            participant_data.get('usatf_discount_additional_field'),
-            participant_data.get('giveaway'),
-            participant_data.get('giveaway_option_id'),
-            participant_data.get('fundraiser_id'),
-            participant_data.get('fundraiser_charity_id'),
-            participant_data.get('fundraiser_charity_name'),
-            participant_data.get('team_fundraiser_id'),
-            participant_data.get('multi_race_bundle_id'),
-            participant_data.get('multi_race_bundle'),
-            json.dumps(participant_data.get('signed_waiver_details')) if participant_data.get('signed_waiver_details') else None,
-            participant_data.get('imported') == 'T' if participant_data.get('imported') else None,
-            participant_data.get('last_modified'),
-            datetime.now(),
-            self.api_key,
-            self.timing_partner_id
-        ))
+            SELECT id FROM runsignup_participants 
+            WHERE registration_id = %s AND timing_partner_id = %s
+        """, (participant_data.get('registration_id'), self.timing_partner_id))
+        
+        existing = cursor.fetchone()
+        
+        if existing:
+            # Update existing record
+            cursor.execute("""
+                UPDATE runsignup_participants SET
+                    race_id = %s, event_id = %s, user_id = %s, first_name = %s, middle_name = %s, last_name = %s,
+                    email = %s, address = %s, dob = %s, gender = %s, phone = %s, profile_image_url = %s,
+                    bib_num = %s, chip_num = %s, age = %s, registration_date = %s, 
+                    team_info = %s, payment_info = %s, additional_data = %s,
+                    fetched_date = %s, credentials_used = %s, last_modified = %s
+                WHERE id = %s
+            """, (
+                race_id,
+                event_id,
+                participant_data.get('user', {}).get('user_id'),
+                participant_data.get('user', {}).get('first_name'),
+                participant_data.get('user', {}).get('middle_name'),
+                participant_data.get('user', {}).get('last_name'),
+                participant_data.get('user', {}).get('email'),
+                json.dumps(participant_data.get('user', {}).get('address', {})) if participant_data.get('user', {}).get('address') else None,
+                self._parse_runsignup_date(participant_data.get('user', {}).get('dob')),
+                participant_data.get('user', {}).get('gender'),
+                participant_data.get('user', {}).get('phone'),
+                participant_data.get('user', {}).get('profile_image_url'),
+                participant_data.get('bib_num'),
+                participant_data.get('chip_num'),
+                participant_data.get('user', {}).get('age'),
+                self._parse_runsignup_date(participant_data.get('registration_date')),
+                json.dumps({
+                    'team_id': participant_data.get('team_id'),
+                    'team_name': participant_data.get('team_name'),
+                    'team_type_id': participant_data.get('team_type_id'),
+                    'team_type': participant_data.get('team_type'),
+                    'team_gender': participant_data.get('team_gender'),
+                    'team_bib_num': participant_data.get('team_bib_num')
+                }),
+                json.dumps({
+                    'race_fee': self._clean_currency_string(participant_data.get('race_fee', '0')),
+                    'offline_payment_amount': self._clean_currency_string(participant_data.get('offline_payment_amount', '0')),
+                    'processing_fee': self._clean_currency_string(participant_data.get('processing_fee', '0')),
+                    'processing_fee_paid_by_user': self._clean_currency_string(participant_data.get('processing_fee_paid_by_user', '0')),
+                    'processing_fee_paid_by_race': self._clean_currency_string(participant_data.get('processing_fee_paid_by_race', '0')),
+                    'partner_fee': self._clean_currency_string(participant_data.get('partner_fee', '0')),
+                    'affiliate_profit': self._clean_currency_string(participant_data.get('affiliate_profit', '0')),
+                    'extra_fees': self._clean_currency_string(participant_data.get('extra_fees', '0')),
+                    'amount_paid': self._clean_currency_string(participant_data.get('amount_paid', '0')),
+                    'rsu_transaction_id': participant_data.get('rsu_transaction_id'),
+                    'transaction_id': participant_data.get('transaction_id')
+                }),
+                json.dumps({
+                    'usatf_discount_amount_in_cents': participant_data.get('usatf_discount_amount_in_cents'),
+                    'usatf_discount_additional_field': participant_data.get('usatf_discount_additional_field'),
+                    'giveaway': participant_data.get('giveaway'),
+                    'giveaway_option_id': participant_data.get('giveaway_option_id'),
+                    'fundraiser_id': participant_data.get('fundraiser_id'),
+                    'fundraiser_charity_id': participant_data.get('fundraiser_charity_id'),
+                    'fundraiser_charity_name': participant_data.get('fundraiser_charity_name'),
+                    'team_fundraiser_id': participant_data.get('team_fundraiser_id'),
+                    'multi_race_bundle_id': participant_data.get('multi_race_bundle_id'),
+                    'multi_race_bundle': participant_data.get('multi_race_bundle'),
+                    'signed_waiver_details': participant_data.get('signed_waiver_details'),
+                    'imported': participant_data.get('imported')
+                }),
+                datetime.now(),
+                self.api_key,
+                self._parse_runsignup_date(participant_data.get('last_modified')),
+                existing[0]  # id
+            ))
+        else:
+            # Insert new record (without specifying id, let it auto-increment)
+            cursor.execute("""
+                INSERT INTO runsignup_participants (
+                    race_id, event_id, registration_id, user_id, first_name, middle_name, last_name,
+                    email, address, dob, gender, phone, profile_image_url,
+                    bib_num, chip_num, age, registration_date, 
+                    team_info, payment_info, additional_data,
+                    fetched_date, credentials_used, timing_partner_id, last_modified, created_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                race_id,
+                event_id,
+                participant_data.get('registration_id'),
+                participant_data.get('user', {}).get('user_id'),
+                participant_data.get('user', {}).get('first_name'),
+                participant_data.get('user', {}).get('middle_name'),
+                participant_data.get('user', {}).get('last_name'),
+                participant_data.get('user', {}).get('email'),
+                json.dumps(participant_data.get('user', {}).get('address', {})) if participant_data.get('user', {}).get('address') else None,
+                self._parse_runsignup_date(participant_data.get('user', {}).get('dob')),
+                participant_data.get('user', {}).get('gender'),
+                participant_data.get('user', {}).get('phone'),
+                participant_data.get('user', {}).get('profile_image_url'),
+                participant_data.get('bib_num'),
+                participant_data.get('chip_num'),
+                participant_data.get('user', {}).get('age'),
+                self._parse_runsignup_date(participant_data.get('registration_date')),
+                json.dumps({
+                    'team_id': participant_data.get('team_id'),
+                    'team_name': participant_data.get('team_name'),
+                    'team_type_id': participant_data.get('team_type_id'),
+                    'team_type': participant_data.get('team_type'),
+                    'team_gender': participant_data.get('team_gender'),
+                    'team_bib_num': participant_data.get('team_bib_num')
+                }),
+                json.dumps({
+                    'race_fee': self._clean_currency_string(participant_data.get('race_fee', '0')),
+                    'offline_payment_amount': self._clean_currency_string(participant_data.get('offline_payment_amount', '0')),
+                    'processing_fee': self._clean_currency_string(participant_data.get('processing_fee', '0')),
+                    'processing_fee_paid_by_user': self._clean_currency_string(participant_data.get('processing_fee_paid_by_user', '0')),
+                    'processing_fee_paid_by_race': self._clean_currency_string(participant_data.get('processing_fee_paid_by_race', '0')),
+                    'partner_fee': self._clean_currency_string(participant_data.get('partner_fee', '0')),
+                    'affiliate_profit': self._clean_currency_string(participant_data.get('affiliate_profit', '0')),
+                    'extra_fees': self._clean_currency_string(participant_data.get('extra_fees', '0')),
+                    'amount_paid': self._clean_currency_string(participant_data.get('amount_paid', '0')),
+                    'rsu_transaction_id': participant_data.get('rsu_transaction_id'),
+                    'transaction_id': participant_data.get('transaction_id')
+                }),
+                json.dumps({
+                    'usatf_discount_amount_in_cents': participant_data.get('usatf_discount_amount_in_cents'),
+                    'usatf_discount_additional_field': participant_data.get('usatf_discount_additional_field'),
+                    'giveaway': participant_data.get('giveaway'),
+                    'giveaway_option_id': participant_data.get('giveaway_option_id'),
+                    'fundraiser_id': participant_data.get('fundraiser_id'),
+                    'fundraiser_charity_id': participant_data.get('fundraiser_charity_id'),
+                    'fundraiser_charity_name': participant_data.get('fundraiser_charity_name'),
+                    'team_fundraiser_id': participant_data.get('team_fundraiser_id'),
+                    'multi_race_bundle_id': participant_data.get('multi_race_bundle_id'),
+                    'multi_race_bundle': participant_data.get('multi_race_bundle'),
+                    'signed_waiver_details': participant_data.get('signed_waiver_details'),
+                    'imported': participant_data.get('imported')
+                }),
+                datetime.now(),
+                self.api_key,
+                self.timing_partner_id,
+                self._parse_runsignup_date(participant_data.get('last_modified')),
+                datetime.now()
+            ))
     
     def _store_event(self, event: ProviderEvent):
-        """Store event in RunSignUp events table (legacy method for base class)"""
-        # This is called by the base class but we handle storage differently
-        # The actual storage is done via store_race, store_event, store_participant methods
-        pass
+        """Store event in RunSignUp events table (called by base class)"""
+        try:
+            # Get database connection
+            import psycopg2
+            import os
+            
+            # Connect to PostgreSQL database
+            conn = psycopg2.connect(
+                host=os.getenv('DB_HOST', 'localhost'),
+                database=os.getenv('DB_NAME', 'project88_myappdb'),
+                user=os.getenv('DB_USER', 'project88_admin'),
+                password=os.getenv('DB_PASSWORD', 'securepassword123')
+            )
+            
+            cursor = conn.cursor()
+            
+            # Extract event data from ProviderEvent
+            race_data = event.raw_data.get('race', {})
+            event_data = event.raw_data.get('event', {})
+            race_id = race_data.get('race_id')
+            event_id = event_data.get('event_id')
+            
+            # Validate required fields
+            if not event_id:
+                self.logger.error(f"Missing event_id for event {event.provider_event_id}. Raw data keys: {list(event.raw_data.keys())}")
+                if event_data:
+                    self.logger.error(f"Event data keys: {list(event_data.keys())}")
+                return
+            
+            if not race_id:
+                self.logger.error(f"Missing race_id for event {event_id}. Race data keys: {list(race_data.keys()) if race_data else 'No race data'}")
+                return
+                
+            # Store the event using our existing method - pass the extracted event_data dict
+            self.store_event(event_data, race_id, conn)
+            
+            # Commit and close
+            conn.commit()
+            conn.close()
+            
+            self.logger.info(f"✅ Successfully stored event {event_id} via _store_event")
+            
+        except Exception as e:
+            self.logger.error(f"❌ Failed to store event {event.provider_event_id} via _store_event: {e}")
+            if 'conn' in locals():
+                conn.rollback()
+                conn.close()
     
     def _store_participant(self, participant: ProviderParticipant):
-        """Store participant in RunSignUp participants table (legacy method for base class)"""
-        # This is called by the base class but we handle storage differently
-        # The actual storage is done via store_race, store_event, store_participant methods
-        pass
+        """Store participant in RunSignUp participants table (called by base class)"""
+        try:
+            # Get database connection
+            import psycopg2
+            import os
+            
+            # Connect to PostgreSQL database
+            conn = psycopg2.connect(
+                host=os.getenv('DB_HOST', 'localhost'),
+                database=os.getenv('DB_NAME', 'project88_myappdb'),
+                user=os.getenv('DB_USER', 'project88_admin'),
+                password=os.getenv('DB_PASSWORD', 'securepassword123')
+            )
+            
+            cursor = conn.cursor()
+            
+            # Extract participant data
+            participant_data = participant.raw_data
+            race_id = participant_data.get('race_id')
+            event_id = participant.event_id
+            
+            # Validate required fields
+            if not event_id:
+                self.logger.error(f"Missing event_id for participant {participant.provider_participant_id}")
+                return
+            
+            if not race_id:
+                self.logger.error(f"Missing race_id for participant {participant.provider_participant_id}")
+                return
+                
+            # Store the participant using our existing method
+            self.store_participant(participant_data, race_id, event_id, conn)
+            
+            # Commit and close
+            conn.commit()
+            conn.close()
+            
+            self.logger.debug(f"Successfully stored participant {participant.provider_participant_id} via _store_participant")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to store participant {participant.provider_participant_id} via _store_participant: {e}")
+            if 'conn' in locals():
+                conn.rollback()
+                conn.close()
 
     def _clean_currency_string(self, value: str) -> float:
         """Convert currency string like '$55.00' to float"""
@@ -569,13 +645,32 @@ class RunSignUpAdapter(BaseProviderAdapter):
         except (ValueError, TypeError):
             return None
 
-    def _parse_runsignup_date(self, date_str: str) -> Optional[datetime]:
-        """Parse RunSignUp date format like '9/7/2021 15:15'"""
-        if not date_str:
+    def _parse_runsignup_date(self, date_value) -> Optional[datetime]:
+        """Parse RunSignUp date format - handles strings, integers (timestamps), and datetime objects"""
+        if not date_value:
             return None
-        try:
-            # Handle RunSignUp's MM/DD/YYYY HH:MM format
-            return datetime.strptime(date_str, "%m/%d/%Y %H:%M")
-        except (ValueError, TypeError):
-            # Fallback to standard ISO format
-            return self._parse_datetime(date_str) 
+        
+        # If it's already a datetime object, return it as-is
+        if isinstance(date_value, datetime):
+            return date_value
+        
+        # If it's an integer, treat it as a Unix timestamp
+        if isinstance(date_value, int):
+            try:
+                return datetime.fromtimestamp(date_value)
+            except (ValueError, OSError) as e:
+                self.logger.warning(f"Could not parse timestamp {date_value}: {e}")
+                return None
+        
+        # If it's a string, try various parsing methods
+        if isinstance(date_value, str):
+            try:
+                # Handle RunSignUp's MM/DD/YYYY HH:MM format
+                return datetime.strptime(date_value, "%m/%d/%Y %H:%M")
+            except (ValueError, TypeError):
+                # Fallback to standard ISO format
+                return self._parse_datetime(date_value)
+        
+        # If it's none of the above, log and return None
+        self.logger.warning(f"Unexpected date format: {type(date_value)} - {date_value}")
+        return None 
