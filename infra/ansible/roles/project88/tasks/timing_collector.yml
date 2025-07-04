@@ -1,0 +1,43 @@
+---
+# Timing Collector service deployment
+- name: Create timing collector configuration
+  template:
+    src: timing-collector.env.j2
+    dest: "{{ app_config_dir }}/timing-collector.env"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0600'
+  tags: timing-collector-config
+
+- name: Deploy Timing Collector container
+  docker_container:
+    name: "project88-timing-collector-{{ environment }}"
+    image: "{{ docker_registry }}/project88/timing-collector:{{ docker_tag | default('latest') }}"
+    state: started
+    restart_policy: always
+    ports:
+      - "61611:61611"
+    env_file: "{{ app_config_dir }}/timing-collector.env"
+    volumes:
+      - "{{ app_log_dir }}:/var/log/project88"
+      - "/etc/localtime:/etc/localtime:ro"
+    networks:
+      - name: "project88-{{ environment }}"
+    healthcheck:
+      test: ["CMD", "netstat", "-tuln", "|", "grep", ":61611"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    labels:
+      project88.service: "timing-collector"
+      project88.environment: "{{ environment }}"
+  tags: timing-collector-container
+
+- name: Ensure timing collector port is open in firewall
+  ufw:
+    rule: allow
+    port: '61611'
+    proto: tcp
+    comment: "ChronoTrack timing data port"
+  tags: timing-collector-firewall

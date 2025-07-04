@@ -1,0 +1,37 @@
+# Logrotate configuration for Project88Hub database refresh logs
+# Industry standard: Keep 30 days of daily logs
+
+/var/log/project88/db_refresh.log {
+    daily
+    missingok
+    rotate 30
+    compress
+    delaycompress
+    notifempty
+    create 644 project88 project88
+    
+    postrotate
+        # Signal the monitoring script to check status
+        /opt/project88/scripts/monitor_db_refresh.sh status >> /var/log/project88/db_monitor.log 2>&1 || true
+    endscript
+}
+
+/var/log/project88/db_monitor.log {
+    weekly
+    missingok
+    rotate 8
+    compress
+    delaycompress
+    notifempty
+    create 644 project88 project88
+}
+
+/var/log/project88/db_refresh_failures.log {
+    weekly
+    missingok
+    rotate 52
+    compress
+    delaycompress
+    notifempty
+    create 644 project88 project88
+}

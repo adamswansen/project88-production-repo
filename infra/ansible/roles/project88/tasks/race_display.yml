@@ -1,0 +1,46 @@
+---
+# Race Display application deployment
+- name: Create race display configuration
+  template:
+    src: race-display.env.j2
+    dest: "{{ app_config_dir }}/race-display.env"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0600'
+  tags: race-display-config
+
+- name: Deploy Race Display container
+  docker_container:
+    name: "project88-race-display-{{ environment }}"
+    image: "{{ docker_registry }}/project88/race-display:{{ docker_tag | default('latest') }}"
+    state: started
+    restart_policy: always
+    ports:
+      - "{{ race_display_port }}:5000"
+    env_file: "{{ app_config_dir }}/race-display.env"
+    volumes:
+      - "{{ app_log_dir }}:/var/log/project88"
+      - "/etc/localtime:/etc/localtime:ro"
+    networks:
+      - name: "project88-{{ environment }}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    labels:
+      project88.service: "race-display"
+      project88.environment: "{{ environment }}"
+      traefik.enable: "true"
+      traefik.http.routers.race-display-{{ environment }}.rule: "Host(`{{ race_display_domain }}`)"
+      traefik.http.services.race-display-{{ environment }}.loadbalancer.server.port: "5000"
+  tags: race-display-container
+
+- name: Create race display nginx configuration
+  template:
+    src: race-display-nginx.conf.j2
+    dest: "/etc/nginx/sites-available/race-display-{{ environment }}.conf"
+  notify: reload nginx
+  when: deployment_method == 'nginx'
+  tags: race-display-nginx

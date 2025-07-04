@@ -1,0 +1,48 @@
+---
+# Backup scheduling with cron jobs
+- name: Schedule daily database backups
+  cron:
+    name: "Project88 {{ environment }} daily database backup"
+    minute: "0"
+    hour: "2"
+    job: "{{ backup_base_dir }}/scripts/database_backup.py >> {{ backup_base_dir }}/logs/daily_backup.log 2>&1"
+    user: "{{ app_user }}"
+  tags: daily-backup-cron
+
+- name: Schedule weekly full backups
+  cron:
+    name: "Project88 {{ environment }} weekly full backup"
+    minute: "0"
+    hour: "1"
+    weekday: "0"
+    job: "{{ backup_base_dir }}/scripts/file_backup.py >> {{ backup_base_dir }}/logs/weekly_backup.log 2>&1"
+    user: "{{ app_user }}"
+  tags: weekly-backup-cron
+
+- name: Schedule S3 cleanup
+  cron:
+    name: "Project88 {{ environment }} S3 cleanup"
+    minute: "30"
+    hour: "3"
+    job: "{{ backup_base_dir }}/scripts/s3_cleanup.py >> {{ backup_base_dir }}/logs/s3_cleanup.log 2>&1"
+    user: "{{ app_user }}"
+  tags: cleanup-cron
+
+- name: Schedule dev database refresh (dev environment only)
+  cron:
+    name: "Project88 dev database refresh"
+    minute: "0"
+    hour: "4"
+    job: "{{ backup_base_dir }}/scripts/dev_db_refresh.py >> {{ backup_base_dir }}/logs/dev_refresh.log 2>&1"
+    user: "{{ app_user }}"
+  when: environment == 'dev'
+  tags: dev-refresh-cron
+
+- name: Schedule backup verification
+  cron:
+    name: "Project88 {{ environment }} backup verification"
+    minute: "15"
+    hour: "6"
+    job: "{{ backup_base_dir }}/scripts/verify_backup.py >> {{ backup_base_dir }}/logs/backup_verification.log 2>&1"
+    user: "{{ app_user }}"
+  tags: backup-verify-cron

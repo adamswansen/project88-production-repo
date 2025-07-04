@@ -1,0 +1,97 @@
+{
+  "environment": "{{ 'development' if inventory_hostname in groups.get('dev', []) else 'production' }}",
+  "server_name": "{{ inventory_hostname }}",
+  "thresholds": {
+    "disk_warning": 80,
+    "disk_critical": 90,
+    "memory_warning": 85,
+    "memory_critical": 90,
+    "cpu_warning": 80,
+    "cpu_critical": 95,
+    "load_warning": {{ ansible_processor_vcpus * 2 }},
+    "load_critical": {{ ansible_processor_vcpus * 4 }},
+    "response_time_warning": 5.0,
+    "response_time_critical": 10.0
+  },
+  "services": {
+    "race_display": {
+      "url": "http://localhost:{{ '5001' if inventory_hostname in groups.get('prod', []) else '5002' }}/health",
+      "timeout": 10,
+      "critical": true
+    },
+    "ai_platform": {
+      "url": "http://localhost:{{ '8501' if inventory_hostname in groups.get('prod', []) else '8502' }}/health",
+      "timeout": 10,
+      "critical": true
+    },
+    "chronotrack_collector": {
+      "port": 61611,
+      "timeout": 5,
+      "critical": true
+    },
+    "authentication": {
+      "url": "http://localhost:{{ '8000' if inventory_hostname in groups.get('prod', []) else '8001' }}/health",
+      "timeout": 10,
+      "critical": true
+    },
+    "database": {
+      "host": "localhost",
+      "port": {{ '5432' if inventory_hostname in groups.get('prod', []) else '5433' }},
+      "database": "{{ 'project88_myappdb' if inventory_hostname in groups.get('prod', []) else 'project88_dev_myappdb' }}",
+      "user": "{{ 'project88_myappuser' if inventory_hostname in groups.get('prod', []) else 'project88_dev_user' }}",
+      "critical": true
+    },
+    "redis": {
+      "port": {{ '6379' if inventory_hostname in groups.get('prod', []) else '6380' }},
+      "timeout": 5,
+      "critical": false
+    }
+  },
+  "alert_settings": {
+    "cooldown_seconds": 300,
+    "max_alerts_per_hour": 10,
+    "escalation_threshold": 3,
+    "email_enabled": true,
+    "daily_summary_enabled": true,
+    "daily_summary_time": "08:00"
+  },
+  "monitoring_intervals": {
+    "health_check_seconds": 60,
+    "system_metrics_seconds": 30,
+    "service_check_seconds": 60,
+    "daily_summary_hour": 8
+  },
+  "retention": {
+    "metrics_days": 30,
+    "alerts_days": 90,
+    "logs_days": 30
+  },
+  "performance_baselines": {
+    "expected_response_times": {
+      "race_display": 2.0,
+      "ai_platform": 3.0,
+      "authentication": 1.0,
+      "database": 0.5
+    },
+    "expected_cpu_idle": 70,
+    "expected_memory_free": 20,
+    "expected_disk_free": 30
+  },
+  "notification_rules": {
+    "immediate_alerts": [
+      "service_down",
+      "disk_critical",
+      "memory_critical",
+      "cpu_critical"
+    ],
+    "delayed_alerts": [
+      "high_response_time",
+      "disk_warning",
+      "memory_warning"
+    ],
+    "summary_only": [
+      "performance_degradation",
+      "minor_warnings"
+    ]
+  }
+}

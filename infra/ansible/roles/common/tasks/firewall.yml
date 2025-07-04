@@ -1,0 +1,53 @@
+---
+# UFW firewall configuration
+- name: Reset UFW to defaults
+  ufw:
+    state: reset
+  tags: firewall-reset
+
+- name: Set UFW default policies
+  ufw:
+    policy: "{{ item.policy }}"
+    direction: "{{ item.direction }}"
+  loop:
+    - { direction: incoming, policy: deny }
+    - { direction: outgoing, policy: allow }
+  tags: firewall-defaults
+
+- name: Allow SSH access
+  ufw:
+    rule: allow
+    port: '22'
+    proto: tcp
+  tags: firewall-ssh
+
+- name: Allow HTTP/HTTPS
+  ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop:
+    - '80'
+    - '443'
+  tags: firewall-web
+
+- name: Allow application-specific ports
+  ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop: "{{ app_ports }}"
+  when: app_ports is defined
+  tags: firewall-apps
+
+- name: Allow ChronoTrack timing port
+  ufw:
+    rule: allow
+    port: '61611'
+    proto: tcp
+  tags: firewall-timing
+
+- name: Enable UFW
+  ufw:
+    state: enabled
+  tags: firewall-enable

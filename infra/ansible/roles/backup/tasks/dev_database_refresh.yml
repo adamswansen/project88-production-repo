@@ -1,0 +1,96 @@
+---
+# Development Database Refresh Task
+# Nightly refresh at 3 AM EDT with last 500 events strategy
+
+- name: Install Python dependencies for database refresh
+  pip:
+    name:
+      - psycopg2-binary
+      - boto3
+    state: present
+
+- name: Create database refresh script directory
+  file:
+    path: /opt/project88/scripts
+    state: directory
+    owner: project88
+    group: project88
+    mode: '0750'
+
+- name: Copy database refresh script
+  copy:
+    src: dev_database_refresh.py
+    dest: /opt/project88/scripts/dev_database_refresh.py
+    owner: project88
+    group: project88
+    mode: '0750'
+
+- name: Create database refresh configuration
+  template:
+    src: db_refresh_config.env.j2
+    dest: /opt/project88/scripts/.env
+    owner: project88
+    group: project88
+    mode: '0600'
+
+- name: Create systemd service for database refresh
+  template:
+    src: project88-db-refresh.service.j2
+    dest: /etc/systemd/system/project88-db-refresh.service
+    mode: '0644'
+  notify: reload systemd
+
+- name: Create systemd timer for nightly refresh (3 AM EDT)
+  template:
+    src: project88-db-refresh.timer.j2
+    dest: /etc/systemd/system/project88-db-refresh.timer
+    mode: '0644'
+  notify: reload systemd
+
+- name: Enable and start database refresh timer
+  systemd:
+    name: project88-db-refresh.timer
+    enabled: yes
+    state: started
+    daemon_reload: yes
+  when: ansible_env == 'development'
+
+- name: Create database refresh monitoring script
+  template:
+    src: monitor_db_refresh.sh.j2
+    dest: /opt/project88/scripts/monitor_db_refresh.sh
+    owner: project88
+    group: project88
+    mode: '0750'
+
+- name: Setup logrotate for database refresh logs
+  template:
+    src: project88-db-refresh.logrotate.j2
+    dest: /etc/logrotate.d/project88-db-refresh
+    mode: '0644'
+
+- name: Test database refresh script (dry run)
+  command: >
+    /opt/project88/scripts/dev_database_refresh.py --dry-run
+  environment:
+    - PROD_DB_HOST: "{{ vault_prod_db_host | default('69.62.69.90') }}"
+    - PROD_DB_PORT: "{{ vault_prod_db_port | default('5432') }}"
+    - PROD_DB_NAME: "{{ vault_prod_db_name | default('project88_myappdb') }}"
+    - PROD_DB_USER: "{{ vault_prod_db_user | default('project88_myappuser') }}"
+    - PROD_DB_PASSWORD: "{{ vault_db_password }}"
+    - DEV_DB_HOST: "{{ vault_dev_db_host | default('localhost') }}"
+    - DEV_DB_PORT: "{{ vault_dev_db_port | default('5432') }}"
+    - DEV_DB_NAME: "{{ vault_dev_db_name | default('project88_dev_myappdb') }}"
+    - DEV_DB_USER: "{{ vault_dev_db_user | default('project88_dev_user') }}"
+    - DEV_DB_PASSWORD: "{{ vault_dev_db_password }}"
+    - S3_BACKUP_BUCKET: "{{ vault_s3_bucket }}"
+    - AWS_REGION: "{{ vault_s3_region }}"
+    - AWS_ACCESS_KEY_ID: "{{ vault_s3_access_key }}"
+    - AWS_SECRET_ACCESS_KEY: "{{ vault_s3_secret_key }}"
+  register: dry_run_result
+  when: ansible_env == 'development'
+
+- name: Display dry run results
+  debug:
+    var: dry_run_result.stdout_lines
+  when: ansible_env == 'development' and dry_run_result is defined

@@ -1,0 +1,64 @@
+---
+# S3 backup implementation
+- name: Create S3 backup configuration
+  template:
+    src: s3_config.py.j2
+    dest: "{{ backup_base_dir }}/scripts/s3_config.py"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0600'
+  tags: s3-config
+
+- name: Deploy database backup script
+  template:
+    src: database_backup.py.j2
+    dest: "{{ backup_base_dir }}/scripts/database_backup.py"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: s3-backup-script
+
+- name: Deploy file backup script
+  template:
+    src: file_backup.py.j2
+    dest: "{{ backup_base_dir }}/scripts/file_backup.py"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: s3-file-backup
+
+- name: Deploy S3 cleanup script
+  template:
+    src: s3_cleanup.py.j2
+    dest: "{{ backup_base_dir }}/scripts/s3_cleanup.py"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: s3-cleanup
+
+- name: Create AWS credentials file
+  template:
+    src: aws_credentials.j2
+    dest: "/home/{{ app_user }}/.aws/credentials"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0600'
+  tags: aws-credentials
+
+- name: Create AWS config file
+  template:
+    src: aws_config.j2
+    dest: "/home/{{ app_user }}/.aws/config"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0644'
+  tags: aws-config
+
+- name: Test S3 connectivity
+  shell: |
+    export AWS_PROFILE=project88
+    aws s3 ls s3://{{ s3_bucket }}/
+  become_user: "{{ app_user }}"
+  register: s3_test
+  changed_when: false
+  tags: s3-test

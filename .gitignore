@@ -33,6 +33,7 @@ env/
 ENV/
 env.bak/
 venv.bak/
+ansible-env/
 
 # IDE
 .vscode/
@@ -52,6 +53,27 @@ logs/
 .env
 .env.local
 .env.production
+
+# Ansible vault password files
+infra/ansible/.vault_pass
+.vault_pass
+
+# Security credentials and sensitive documentation
+infra/SECURE_CREDENTIALS.md
+**/SECURE_CREDENTIALS.md
+infra/SSH_KEY_MANAGEMENT.md
+**/SSH_KEY_MANAGEMENT.md
+
+# AWS credentials
+aws-credentials.json
+.aws/credentials
+
+# SSH keys (if accidentally placed in repo)
+*.pem
+*-gitlab-ci
+*-gitlab-ci.pub
+id_rsa*
+id_ed25519*
 
 # Temporary files
 *.tmp

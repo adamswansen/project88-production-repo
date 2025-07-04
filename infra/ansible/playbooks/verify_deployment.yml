@@ -1,0 +1,75 @@
+---
+# Deployment verification tasks
+- name: Wait for Docker containers to be healthy
+  docker_container_info:
+    name: "{{ item }}"
+  register: container_info
+  until: container_info.container.State.Health.Status == "healthy" or container_info.container.State.Status == "running"
+  retries: 30
+  delay: 10
+  loop:
+    - "project88-postgres-{{ environment }}"
+    - "project88-redis-{{ environment }}"
+    - "project88-race-display-{{ environment }}"
+    - "project88-authentication-{{ environment }}"
+    - "project88-provider-integrations-{{ environment }}"
+    - "project88-timing-collector-{{ environment }}"
+  ignore_errors: yes
+  tags: container-health
+
+- name: Check service ports are listening
+  wait_for:
+    port: "{{ item }}"
+    host: localhost
+    timeout: 30
+  loop:
+    - "{{ postgres_port }}"
+    - "{{ redis_port }}"
+    - "{{ race_display_port }}"
+    - "{{ auth_port }}"
+    - "{{ provider_integrations_port }}"
+    - 61611
+  tags: port-check
+
+- name: Test database connectivity
+  postgresql_ping:
+    db: "{{ postgres_db }}"
+    login_host: localhost
+    login_port: "{{ postgres_port }}"
+    login_user: "{{ postgres_user }}"
+    login_password: "{{ postgres_password }}"
+  tags: db-test
+
+- name: Test Redis connectivity
+  redis:
+    command: ping
+    login_host: localhost
+    login_port: "{{ redis_port }}"
+  tags: redis-test
+
+- name: Test application health endpoints
+  uri:
+    url: "http://localhost:{{ item.port }}{{ item.path }}"
+    method: GET
+    status_code: [200, 404]  # Some apps might not have /health endpoint yet
+  loop:
+    - { port: "{{ race_display_port }}", path: "/health" }
+    - { port: "{{ auth_port }}", path: "/health" }
+  ignore_errors: yes
+  tags: app-health
+
+- name: Verify backup configuration
+  stat:
+    path: "{{ backup_base_dir }}/scripts/database_backup.py"
+  register: backup_script
+  tags: backup-check
+
+- name: Test S3 connectivity
+  shell: |
+    export AWS_ACCESS_KEY_ID="{{ vault_s3_access_key }}"
+    export AWS_SECRET_ACCESS_KEY="{{ vault_s3_secret_key }}"
+    aws s3 ls s3://{{ s3_bucket }}/{{ environment }}/
+  become_user: "{{ app_user }}"
+  register: s3_test
+  changed_when: false
+  tags: s3-test

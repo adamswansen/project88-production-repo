@@ -1,0 +1,42 @@
+[Unit]
+Description=Project88Hub Daily Summary Report Service
+Documentation=https://github.com/brrm-group/project88-production-repo
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=project88
+Group=project88
+WorkingDirectory=/opt/project88/monitoring
+Environment=PYTHONPATH=/opt/project88/monitoring/config
+EnvironmentFile=/opt/project88/monitoring/config/.env
+
+# Daily summary script
+ExecStart=/usr/bin/python3 /opt/project88/monitoring/scripts/daily_summary.py --send
+
+# Cleanup old metrics (keep 30 days)
+ExecStartPost=/usr/bin/python3 /opt/project88/monitoring/scripts/daily_summary.py --cleanup
+
+# Timeout settings
+TimeoutStartSec=300
+TimeoutStopSec=30
+
+# Resource limits
+MemoryMax=256M
+CPUQuota=25%
+
+# Security settings
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/log/project88/monitoring /opt/project88/monitoring/logs
+PrivateTmp=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=project88-daily-summary
+
+[Install]
+WantedBy=multi-user.target

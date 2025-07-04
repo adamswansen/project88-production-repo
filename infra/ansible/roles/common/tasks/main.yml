@@ -1,0 +1,59 @@
+---
+# Common role - System hardening and security configuration
+- name: Update system packages
+  dnf:
+    update_cache: yes
+    upgrade: all
+  tags: packages
+
+- name: Install essential security packages
+  dnf:
+    name:
+      - fail2ban
+      - ufw
+      - htop
+      - curl
+      - wget
+      - git
+      - rsync
+      - unzip
+    state: present
+  tags: packages
+
+- name: Configure SSH hardening
+  include_tasks: ssh_hardening.yml
+  tags: ssh
+
+- name: Configure UFW firewall
+  include_tasks: firewall.yml
+  tags: firewall
+
+- name: Configure Fail2ban
+  include_tasks: fail2ban.yml
+  tags: fail2ban
+
+- name: Set system timezone
+  timezone:
+    name: "{{ system_timezone | default('UTC') }}"
+  tags: system
+
+- name: Configure system limits
+  pam_limits:
+    domain: '*'
+    limit_type: soft
+    limit_item: nofile
+    value: '65536'
+  tags: system
+
+- name: Create application directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  loop:
+    - "{{ app_base_dir }}"
+    - "{{ app_log_dir }}"
+    - "{{ app_data_dir }}"
+  tags: directories

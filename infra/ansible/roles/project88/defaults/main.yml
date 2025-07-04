@@ -1,0 +1,46 @@
+---
+# Default variables for project88 role
+app_user: appuser
+app_group: appuser
+app_base_dir: /opt/project88
+app_log_dir: /var/log/project88
+app_config_dir: /etc/project88
+
+# Deployment method: docker or systemd
+deployment_method: docker
+
+# Docker configuration
+docker_registry: registry.gitlab.com
+docker_tag: latest
+
+# Database configuration
+postgres_db: project88_myappdb
+postgres_user: project88_myappuser
+postgres_password: "{{ vault_postgres_password }}"
+
+# Application ports (environment-specific)
+postgres_port: 5432
+redis_port: 6379
+race_display_port: 5001
+auth_port: 8001
+provider_integrations_port: 8002
+timing_collector_port: 61611
+
+# Domain configuration (environment-specific)
+primary_domain: project88hub.com
+race_display_domain: display.project88hub.com
+auth_domain: auth.project88hub.com
+provider_integrations_domain: api.project88hub.com
+
+# SSL configuration
+enable_ssl: true
+ssl_email: admin@project88hub.com
+ssl_domains: []
+
+# Health check configuration
+health_check_enabled: true
+
+# Network configuration
+docker_network: "project88-{{ environment }}"
+docker_subnet: "172.20.0.0/16"
+docker_gateway: "172.20.0.1"

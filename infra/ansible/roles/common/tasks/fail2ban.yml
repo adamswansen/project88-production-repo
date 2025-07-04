@@ -1,0 +1,24 @@
+---
+# Fail2ban configuration for enhanced security
+- name: Create fail2ban local configuration
+  template:
+    src: jail.local.j2
+    dest: /etc/fail2ban/jail.local
+    backup: yes
+  notify: restart fail2ban
+  tags: fail2ban-config
+
+- name: Enable and start fail2ban service
+  systemd:
+    name: fail2ban
+    enabled: yes
+    state: started
+  tags: fail2ban-service
+
+- name: Create custom fail2ban filter for application logs
+  template:
+    src: project88-auth.conf.j2
+    dest: /etc/fail2ban/filter.d/project88-auth.conf
+  notify: restart fail2ban
+  when: enable_app_fail2ban | default(false)
+  tags: fail2ban-custom

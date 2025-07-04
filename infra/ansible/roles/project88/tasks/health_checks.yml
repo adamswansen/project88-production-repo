@@ -1,0 +1,44 @@
+---
+# Health check scripts and monitoring
+- name: Create health check script directory
+  file:
+    path: "{{ app_base_dir }}/health-checks"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: health-check-dir
+
+- name: Deploy health check scripts
+  template:
+    src: "{{ item }}.j2"
+    dest: "{{ app_base_dir }}/health-checks/{{ item }}"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  loop:
+    - check_database.sh
+    - check_services.sh
+    - check_ports.sh
+    - overall_health.sh
+  tags: health-check-scripts
+
+- name: Create health check cron jobs
+  cron:
+    name: "Project88 {{ item.name }} health check"
+    minute: "{{ item.minute | default('*/5') }}"
+    hour: "{{ item.hour | default('*') }}"
+    job: "{{ app_base_dir }}/health-checks/{{ item.script }} >> {{ app_log_dir }}/health-check.log 2>&1"
+    user: "{{ app_user }}"
+  loop:
+    - { name: "overall", script: "overall_health.sh", minute: "*/5" }
+    - { name: "database", script: "check_database.sh", minute: "*/10" }
+    - { name: "services", script: "check_services.sh", minute: "*/2" }
+  tags: health-check-cron
+
+- name: Create health check endpoint for nginx
+  template:
+    src: health-endpoint.html.j2
+    dest: /var/www/html/health
+    mode: '0644'
+  tags: health-endpoint

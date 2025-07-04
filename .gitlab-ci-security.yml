@@ -1,0 +1,158 @@
+# Security scanning configuration for Project88Hub
+# Extended security templates and custom security jobs
+
+# Override default SAST configuration
+sast:
+  variables:
+    SAST_EXCLUDED_PATHS: "spec,test,tests,tmp,venv,env,ansible-env"
+    SAST_EXCLUDED_ANALYZERS: "nodejs-scan"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "dev" 
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+# Override dependency scanning
+dependency_scanning:
+  variables:
+    DS_EXCLUDED_PATHS: "spec,test,tests,tmp,venv,env,ansible-env"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "dev"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+# Container scanning for built images
+container_scanning:
+  variables:
+    CS_IMAGE: $IMAGE_REPO/provider-integrations:$IMAGE_TAG
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      exists:
+        - apps/provider-integrations/Dockerfile
+    - if: $CI_COMMIT_BRANCH == "dev"
+      exists:
+        - apps/provider-integrations/Dockerfile
+
+# Secret detection
+secret_detection:
+  variables:
+    SECRET_DETECTION_EXCLUDED_PATHS: "spec,test,tests,tmp,venv,env,ansible-env,*.log"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "dev"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+# Custom security jobs
+security:bandit:
+  stage: security
+  image: python:3.11-slim
+  before_script:
+    - pip install bandit[toml]
+  script:
+    - echo "🔒 Running Bandit security linter..."
+    - bandit -r apps/ -f json -o bandit-report.json || true
+    - bandit -r apps/ || echo "⚠️ Security issues found"
+  artifacts:
+    reports:
+      sast: bandit-report.json
+    expire_in: 1 week
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "dev"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+security:ansible:
+  stage: security
+  image: quay.io/ansible/ansible-runner:latest
+  before_script:
+    - pip install ansible-lint
+  script:
+    - echo "🔒 Running Ansible security checks..."
+    - ansible-lint infra/ansible/ --parseable-severity || echo "⚠️ Ansible security issues found"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "dev"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - changes:
+        - infra/ansible/**/*
+
+security:secrets-audit:
+  stage: security
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache git grep
+  script:
+    - echo "🔒 Scanning for exposed secrets..."
+    - |
+      echo "Checking for common secret patterns..."
+      
+      # Check for potential secrets (case insensitive)
+      SECRET_PATTERNS=(
+        "password\s*=\s*['\"][^'\"]{8,}"
+        "api[_-]?key\s*=\s*['\"][^'\"]{10,}"
+        "secret[_-]?key\s*=\s*['\"][^'\"]{10,}"
+        "private[_-]?key\s*=\s*['\"][^'\"]{10,}"
+        "token\s*=\s*['\"][^'\"]{10,}"
+        "aws[_-]?access[_-]?key\s*=\s*['\"][^'\"]{10,}"
+      )
+      
+      ISSUES_FOUND=0
+      for pattern in "${SECRET_PATTERNS[@]}"; do
+        if grep -r -i -E "$pattern" apps/ infra/ --exclude-dir=venv --exclude-dir=env --exclude-dir=ansible-env --exclude="*.log" --exclude="*.pyc"; then
+          echo "⚠️ Potential secret found matching pattern: $pattern"
+          ISSUES_FOUND=1
+        fi
+      done
+      
+      # Check for hardcoded IPs (except localhost/private ranges)
+      if grep -r -E "([0-9]{1,3}\.){3}[0-9]{1,3}" apps/ infra/ --exclude-dir=venv --exclude-dir=env --exclude="*.md" | grep -v -E "(127\.0\.0\.1|localhost|0\.0\.0\.0|192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.)" | head -5; then
+        echo "⚠️ Potential hardcoded public IP addresses found"
+        ISSUES_FOUND=1
+      fi
+      
+      if [ $ISSUES_FOUND -eq 0 ]; then
+        echo "✅ No obvious secrets or hardcoded values detected"
+      else
+        echo "⚠️ Please review potential security issues above"
+      fi
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "dev"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+security:docker-compose:
+  stage: security
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache grep
+  script:
+    - echo "🔒 Auditing Docker configurations..."
+    - |
+      # Check for insecure Docker configurations
+      echo "Checking Docker configurations for security issues..."
+      
+      ISSUES=0
+      
+      # Check for privileged containers
+      if find . -name "docker-compose*.yml" -o -name "Dockerfile*" | xargs grep -l "privileged.*true" 2>/dev/null; then
+        echo "⚠️ Privileged containers detected"
+        ISSUES=1
+      fi
+      
+      # Check for host network mode
+      if find . -name "docker-compose*.yml" | xargs grep -l "network_mode.*host" 2>/dev/null; then
+        echo "⚠️ Host network mode detected"
+        ISSUES=1
+      fi
+      
+      # Check for missing user declarations in Dockerfiles
+      if find . -name "Dockerfile*" | xargs grep -L "USER " 2>/dev/null; then
+        echo "ℹ️ Some Dockerfiles may be missing USER declarations"
+      fi
+      
+      if [ $ISSUES -eq 0 ]; then
+        echo "✅ Docker configurations look secure"
+      fi
+  rules:
+    - exists:
+        - "**/Dockerfile*"
+        - "**/docker-compose*.yml"

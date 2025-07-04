@@ -1,0 +1,47 @@
+# Production Environment Configuration
+# Project88Hub Production VPS
+
+environment: prod
+environment_suffix: ""
+
+# Domain Configuration
+primary_domain: project88hub.com
+race_display_domain: display.project88hub.com
+auth_domain: auth.project88hub.com
+provider_integrations_domain: api.project88hub.com
+
+# Application Ports
+postgres_port: 5432
+redis_port: 6379
+race_display_port: 5001
+auth_port: 8001
+provider_integrations_port: 8002
+
+# Database Configuration
+postgres_db: project88_myappdb
+postgres_user: project88_myappuser
+postgres_password: "{{ vault_postgres_password }}"
+
+# Docker Registry Configuration
+docker_registry: registry.gitlab.com
+docker_tag: latest
+
+# Backup Schedule (2 AM daily)
+backup_schedule: "0 2 * * *"
+
+# Server Specifications
+server_specs:
+  cpu_cores: 8
+  memory_gb: 32
+  disk_gb: 400
+  
+# Log Configuration
+log_level: INFO
+log_retention_days: 30
+
+# Application replicas
+replicas:
+  race_display: 2
+  ai_platform: 1
+  authentication: 1
+  chronotrack_collector: 1

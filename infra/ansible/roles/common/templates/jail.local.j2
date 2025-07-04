@@ -1,0 +1,38 @@
+[DEFAULT]
+# Ban settings
+bantime = {{ fail2ban_bantime | default('10m') }}
+findtime = {{ fail2ban_findtime | default('10m') }}
+maxretry = {{ fail2ban_maxretry | default('5') }}
+
+# Email notifications (optional)
+{% if fail2ban_email is defined %}
+destemail = {{ fail2ban_email }}
+sender = fail2ban@{{ ansible_hostname }}
+action = %(action_mwl)s
+{% endif %}
+
+[sshd]
+enabled = true
+port = ssh
+filter = sshd
+logpath = /var/log/secure
+maxretry = 3
+bantime = 3600
+
+[sshd-ddos] 
+enabled = true
+port = ssh
+filter = sshd-ddos
+logpath = /var/log/secure
+maxretry = 2
+bantime = 3600
+
+{% if enable_app_fail2ban | default(false) %}
+[project88-auth]
+enabled = true
+port = {{ app_ports | join(',') }}
+filter = project88-auth
+logpath = {{ app_log_dir }}/authentication.log
+maxretry = 5
+bantime = 1800
+{% endif %}

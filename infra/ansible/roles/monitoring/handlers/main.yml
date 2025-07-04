@@ -1,0 +1,28 @@
+# Project88Hub Monitoring Role Handlers
+
+- name: reload systemd
+  systemd:
+    daemon_reload: yes
+  become: yes
+
+- name: restart monitoring
+  systemd:
+    name: project88-monitoring.service
+    state: restarted
+    daemon_reload: yes
+  become: yes
+
+- name: enable daily summary timer
+  systemd:
+    name: project88-daily-summary.timer
+    enabled: yes
+    state: started
+    daemon_reload: yes
+  become: yes
+
+- name: restart daily summary timer
+  systemd:
+    name: project88-daily-summary.timer
+    state: restarted
+    daemon_reload: yes
+  become: yes

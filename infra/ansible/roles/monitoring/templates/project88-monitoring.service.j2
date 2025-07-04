@@ -1,0 +1,46 @@
+[Unit]
+Description=Project88Hub Health Monitoring Service
+Documentation=https://github.com/brrm-group/project88-production-repo
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=project88
+Group=project88
+WorkingDirectory=/opt/project88/monitoring
+Environment=PYTHONPATH=/opt/project88/monitoring/config
+EnvironmentFile=/opt/project88/monitoring/config/.env
+
+# Main monitoring script
+ExecStart=/usr/bin/python3 /opt/project88/monitoring/scripts/project88_monitor.py
+
+# Restart configuration
+Restart=always
+RestartSec=30
+StartLimitBurst=5
+
+# Resource limits
+LimitNOFILE=1024
+MemoryMax=512M
+CPUQuota=50%
+
+# Security settings
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/log/project88/monitoring /opt/project88/monitoring/logs
+PrivateTmp=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=project88-monitoring
+
+# Health checks
+WatchdogSec=300
+NotifyAccess=none
+
+[Install]
+WantedBy=multi-user.target

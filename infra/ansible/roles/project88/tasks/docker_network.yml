@@ -1,0 +1,51 @@
+---
+# Docker network setup for Project88 services
+- name: Create Docker network for Project88 services
+  docker_network:
+    name: "project88-{{ environment }}"
+    driver: bridge
+    ipam_config:
+      - subnet: "{{ docker_subnet }}"
+        gateway: "{{ docker_gateway }}"
+    labels:
+      project88.environment: "{{ environment }}"
+      project88.network: "main"
+  tags: docker-network
+
+- name: Create separate network for database isolation
+  docker_network:
+    name: "project88-db-{{ environment }}"
+    driver: bridge
+    internal: yes
+    labels:
+      project88.environment: "{{ environment }}"
+      project88.network: "database"
+  tags: docker-db-network
+
+- name: Create network for external services (Redis, etc.)
+  docker_network:
+    name: "project88-cache-{{ environment }}"
+    driver: bridge
+    labels:
+      project88.environment: "{{ environment }}"
+      project88.network: "cache"
+  tags: docker-cache-network
+
+- name: Verify Docker networks are created
+  docker_network_info:
+    name: "{{ item }}"
+  loop:
+    - "project88-{{ environment }}"
+    - "project88-db-{{ environment }}"
+    - "project88-cache-{{ environment }}"
+  register: network_info
+  tags: network-verify
+
+- name: Display network information
+  debug:
+    msg: |
+      Docker networks created for {{ environment }} environment:
+      - Main network: project88-{{ environment }}
+      - Database network: project88-db-{{ environment }} (internal)
+      - Cache network: project88-cache-{{ environment }}
+  tags: network-info
