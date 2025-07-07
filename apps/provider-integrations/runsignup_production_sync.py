@@ -11,7 +11,8 @@ import psycopg2.extras
 import json
 import logging
 from datetime import datetime
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
+import argparse
 
 # Add the current directory to the Python path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -50,6 +51,8 @@ class RunSignUpProductionSync:
         self.total_events = 0
         self.total_participants = 0
         self.failed_syncs = []
+        self.force_full_sync = False
+        self.incremental_days = 7
         
     def get_connection(self):
         """Get PostgreSQL database connection"""
@@ -97,7 +100,7 @@ class RunSignUpProductionSync:
         conn.close()
     
     def sync_timing_partner(self, timing_partner_id: int, principal: str, secret: str, credential_id: int) -> Dict:
-        """Sync all data for a specific timing partner"""
+        """Sync all data for a specific timing partner using incremental sync when possible"""
         logger.info(f"Starting sync for timing partner {timing_partner_id} ({principal})")
         
         results = {
@@ -129,9 +132,17 @@ class RunSignUpProductionSync:
                 logger.warning(error_msg)
                 return results
             
+            # Filter for future events only (no point syncing past events)
+            future_events = [e for e in provider_events if e.event_date and e.event_date > datetime.now()]
+            logger.info(f"📅 Found {len(provider_events)} total events, filtering to {len(future_events)} future events")
+            
+            if not future_events:
+                logger.info(f"No future events found for timing partner {timing_partner_id}")
+                return results
+            
             # Group events by race_id to process races efficiently
             races_with_events = {}
-            for event in provider_events:
+            for event in future_events:
                 race_data = event.raw_data.get('race', {})
                 race_id = race_data.get('race_id')
                 if race_id:
@@ -142,7 +153,7 @@ class RunSignUpProductionSync:
                         }
                     races_with_events[race_id]['events'].append(event.raw_data.get('event', {}))
             
-            logger.info(f"Found {len(races_with_events)} races with {len(provider_events)} events for timing partner {timing_partner_id}")
+            logger.info(f"Found {len(races_with_events)} races with {len(future_events)} future events for timing partner {timing_partner_id}")
             
             # Connect to database
             conn = self.get_connection()
@@ -168,10 +179,27 @@ class RunSignUpProductionSync:
                                 results['events'] += 1
                                 logger.debug(f"Stored event {event_id}: {event_data.get('name')}")
                                 
-                                # Get participants for this specific event using paginated method
+                                # Get last sync time for this event to enable incremental sync
+                                last_sync_time = self._get_last_sync_time(event_id, conn)
+                                
+                                # Get participants using incremental sync
                                 try:
-                                    # Use the adapter's paginated get_participants method to get ALL participants
-                                    provider_participants = adapter.get_participants(race_id, str(event_id))
+                                    if self.force_full_sync or not last_sync_time:
+                                        logger.info(f"🔄 Using full sync for event {event_id} {'(forced)' if self.force_full_sync else '(first sync)'}")
+                                        provider_participants = adapter.get_participants(race_id, str(event_id))
+                                        sync_type = "full"
+                                    else:
+                                        # Use incremental sync with safety check
+                                        days_since_last_sync = (datetime.now() - last_sync_time).days
+                                        if days_since_last_sync > self.incremental_days:
+                                            logger.info(f"🔄 Using full sync for event {event_id} (last sync {days_since_last_sync} days ago, threshold: {self.incremental_days} days)")
+                                            provider_participants = adapter.get_participants(race_id, str(event_id))
+                                            sync_type = "full"
+                                        else:
+                                            logger.info(f"🔄 Using incremental sync for event {event_id} (last sync: {last_sync_time})")
+                                            provider_participants = adapter.get_participants(race_id, str(event_id), last_sync_time)
+                                            sync_type = "incremental"
+                                    
                                     participant_count = len(provider_participants)
                                     
                                     if provider_participants:
@@ -186,9 +214,12 @@ class RunSignUpProductionSync:
                                                 logger.error(error_msg)
                                                 results['errors'].append(error_msg)
                                         
-                                        logger.info(f"✅ Synced {participant_count} participants for event {event_id}")
+                                        logger.info(f"✅ Synced {participant_count} participants for event {event_id} ({sync_type} sync)")
                                     else:
-                                        logger.debug(f"No participants found for event {event_id}")
+                                        logger.debug(f"No participants found for event {event_id} ({sync_type} sync)")
+                                    
+                                    # Update last sync time for this event
+                                    self._update_last_sync_time(event_id, conn)
                                 
                                 except Exception as e:
                                     error_msg = f"Error getting participants for event {event_id}: {e}"
@@ -235,6 +266,35 @@ class RunSignUpProductionSync:
                    f"{results['participants']} participants")
         
         return results
+    
+    def _get_last_sync_time(self, event_id: int, conn) -> Optional[datetime]:
+        """Get the last sync time for an event"""
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                SELECT MAX(fetched_date) 
+                FROM runsignup_participants 
+                WHERE event_id = %s
+            """, (event_id,))
+            result = cursor.fetchone()
+            return result[0] if result and result[0] else None
+        except Exception as e:
+            logger.debug(f"Could not get last sync time for event {event_id}: {e}")
+            return None
+    
+    def _update_last_sync_time(self, event_id: int, conn):
+        """Update the last sync time for an event"""
+        cursor = conn.cursor()
+        try:
+            current_time = datetime.now()
+            cursor.execute("""
+                UPDATE runsignup_events 
+                SET fetched_date = %s 
+                WHERE event_id = %s
+            """, (current_time, event_id))
+            logger.debug(f"Updated last sync time for event {event_id}")
+        except Exception as e:
+            logger.debug(f"Could not update last sync time for event {event_id}: {e}")
     
     def run_full_sync(self):
         """Run complete sync for all RunSignUp credentials"""
@@ -306,17 +366,50 @@ class RunSignUpProductionSync:
 
 def main():
     """Main entry point"""
-    if len(sys.argv) > 1 and sys.argv[1] == '--test':
+    parser = argparse.ArgumentParser(description='RunSignUp Production Sync')
+    parser.add_argument('--test', action='store_true', help='Test mode - sync only first timing partner')
+    parser.add_argument('--force-full-sync', action='store_true', help='Force full sync for all events (ignore last sync times)')
+    parser.add_argument('--timing-partner', type=int, help='Sync only specific timing partner ID')
+    parser.add_argument('--incremental-days', type=int, default=7, help='Days to look back for incremental sync (default: 7)')
+    
+    args = parser.parse_args()
+    
+    if args.test:
         # Test mode - sync only first timing partner
         logger.info("🧪 Running in TEST MODE - syncing only first timing partner")
         sync = RunSignUpProductionSync()
+        sync.force_full_sync = args.force_full_sync
+        sync.incremental_days = args.incremental_days
         credentials = sync.get_runsignup_credentials()
         if credentials:
             timing_partner_id, principal, secret, credential_id = credentials[0]
             sync.sync_timing_partner(timing_partner_id, principal, secret, credential_id)
+    elif args.timing_partner:
+        # Single timing partner mode
+        logger.info(f"🎯 Running sync for timing partner {args.timing_partner}")
+        sync = RunSignUpProductionSync()
+        sync.force_full_sync = args.force_full_sync
+        sync.incremental_days = args.incremental_days
+        credentials = sync.get_runsignup_credentials()
+        partner_found = False
+        for timing_partner_id, principal, secret, credential_id in credentials:
+            if timing_partner_id == args.timing_partner:
+                sync.sync_timing_partner(timing_partner_id, principal, secret, credential_id)
+                partner_found = True
+                break
+        if not partner_found:
+            logger.error(f"❌ Timing partner {args.timing_partner} not found!")
     else:
         # Full production sync
         sync = RunSignUpProductionSync()
+        sync.force_full_sync = args.force_full_sync
+        sync.incremental_days = args.incremental_days
+        
+        if args.force_full_sync:
+            logger.info("🔄 FULL SYNC MODE - All events will be fully synced")
+        else:
+            logger.info(f"⚡ INCREMENTAL SYNC MODE - Looking back {args.incremental_days} days for changes")
+        
         sync.run_full_sync()
 
 if __name__ == "__main__":
