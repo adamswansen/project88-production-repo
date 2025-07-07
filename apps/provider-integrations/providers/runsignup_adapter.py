@@ -603,36 +603,48 @@ class RunSignUpAdapter(BaseProviderAdapter):
                 password=os.getenv('DB_PASSWORD', 'securepassword123')
             )
             
-            cursor = conn.cursor()
+            # Use our existing store_participant method with proper race_id and event_id
+            race_id = participant.raw_data.get('race_id')  # Should be in raw_data
+            event_id = participant.raw_data.get('event_id')  # Should be in raw_data
             
-            # Extract participant data
-            participant_data = participant.raw_data
-            race_id = participant_data.get('race_id')
-            event_id = participant.event_id
-            
-            # Validate required fields
-            if not event_id:
-                self.logger.error(f"Missing event_id for participant {participant.provider_participant_id}")
-                return
-            
-            if not race_id:
-                self.logger.error(f"Missing race_id for participant {participant.provider_participant_id}")
+            if not race_id or not event_id:
+                self.logger.error(f"Missing race_id or event_id for participant {participant.participant_id}")
                 return
                 
-            # Store the participant using our existing method
-            self.store_participant(participant_data, race_id, event_id, conn)
+            self.store_participant(participant.raw_data, race_id, event_id, conn)
             
             # Commit and close
             conn.commit()
             conn.close()
             
-            self.logger.debug(f"Successfully stored participant {participant.provider_participant_id} via _store_participant")
-            
         except Exception as e:
-            self.logger.error(f"Failed to store participant {participant.provider_participant_id} via _store_participant: {e}")
+            self.logger.error(f"❌ Failed to store participant {participant.participant_id} via _store_participant: {e}")
             if 'conn' in locals():
                 conn.rollback()
                 conn.close()
+
+    def is_new_event(self, event_id: str, db_connection) -> bool:
+        """Check if an event is new (doesn't exist in database)"""
+        try:
+            cursor = db_connection.cursor()
+            
+            cursor.execute("""
+                SELECT COUNT(*) FROM runsignup_events 
+                WHERE event_id = %s AND timing_partner_id = %s
+            """, (event_id, self.timing_partner_id))
+            
+            count = cursor.fetchone()[0]
+            return count == 0  # True if event is new (doesn't exist)
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error checking if event {event_id} is new: {e}")
+            return False  # Conservative approach - assume not new if error
+    
+    def get_races(self, event_id: str) -> List:
+        """Get races for a specific event (placeholder - implement if needed)"""
+        # This method is called by event-driven scheduler but may not be needed
+        # for RunSignUp since races and events are handled differently
+        return []
 
     def _clean_currency_string(self, value: str) -> float:
         """Convert currency string like '$55.00' to float"""

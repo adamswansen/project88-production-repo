@@ -1,0 +1,283 @@
+{
+  "full_sync_test": {
+    "timing_partners_tested": 2,
+    "partners_results": {
+      "1": {
+        "timing_partner_id": 1,
+        "authentication": true,
+        "races_found": 59,
+        "future_events_found": 225,
+        "participants_synced": 2,
+        "sample_events": [
+          {
+            "event_id": "947830",
+            "event_name": "5K Run/Walk (13 & Over)",
+            "event_date": "2025-09-27 08:30:00",
+            "location": "Saint Louis, MO"
+          },
+          {
+            "event_id": "947831",
+            "event_name": "5K Run/Walk (Ages 2 to 12)",
+            "event_date": "2025-09-27 08:30:00",
+            "location": "Saint Louis, MO"
+          },
+          {
+            "event_id": "947832",
+            "event_name": "1 Mile Fun Run (13 & over)",
+            "event_date": "2025-09-27 08:30:00",
+            "location": "Saint Louis, MO"
+          },
+          {
+            "event_id": "947833",
+            "event_name": "1 Mile Fun Run  (Ages 2 to 12)",
+            "event_date": "2025-09-27 08:30:00",
+            "location": "Saint Louis, MO"
+          },
+          {
+            "event_id": "947834",
+            "event_name": "5K Virtual Run/Walk  (13 & Over)",
+            "event_date": "2025-09-27 00:01:00",
+            "location": "Saint Louis, MO"
+          }
+        ],
+        "errors": []
+      },
+      "2": {
+        "timing_partner_id": 2,
+        "authentication": true,
+        "races_found": 1,
+        "future_events_found": 2,
+        "participants_synced": 4,
+        "sample_events": [
+          {
+            "event_id": "996052",
+            "event_name": "Leah's 5K Run/Walk",
+            "event_date": "2025-10-25 09:30:00",
+            "location": "Wappingers Falls, NY"
+          },
+          {
+            "event_id": "996053",
+            "event_name": "1k \"Spooktacular\" Kids Run",
+            "event_date": "2025-10-25 09:00:00",
+            "location": "Wappingers Falls, NY"
+          }
+        ],
+        "errors": []
+      }
+    },
+    "future_events_found": 227,
+    "total_participants_synced": 6,
+    "errors": []
+  },
+  "incremental_sync_test": {
+    "timing_partner_id": 1,
+    "full_sync_results": {
+      "total_events": 1331,
+      "participant_details": {
+        "947830": {
+          "count": 1,
+          "event_name": "5K Run/Walk (13 & Over)",
+          "with_bibs": 0,
+          "without_bibs": 1
+        },
+        "947831": {
+          "count": 0,
+          "event_name": "5K Run/Walk (Ages 2 to 12)",
+          "with_bibs": 0,
+          "without_bibs": 0
+        },
+        "947832": {
+          "count": 1,
+          "event_name": "1 Mile Fun Run (13 & over)",
+          "with_bibs": 0,
+          "without_bibs": 1
+        }
+      }
+    },
+    "incremental_sync_results": {
+      "24 hours": {
+        "events": 1331,
+        "participants": {
+          "947830": {
+            "count": 0,
+            "event_name": "5K Run/Walk (13 & Over)",
+            "with_bibs": 0,
+            "without_bibs": 0
+          },
+          "947831": {
+            "count": 0,
+            "event_name": "5K Run/Walk (Ages 2 to 12)",
+            "with_bibs": 0,
+            "without_bibs": 0
+          },
+          "947832": {
+            "count": 0,
+            "event_name": "1 Mile Fun Run (13 & over)",
+            "with_bibs": 0,
+            "without_bibs": 0
+          }
+        }
+      },
+      "7 days": {
+        "events": 1331,
+        "participants": {
+          "947830": {
+            "count": 0,
+            "event_name": "5K Run/Walk (13 & Over)",
+            "with_bibs": 0,
+            "without_bibs": 0
+          },
+          "947831": {
+            "count": 0,
+            "event_name": "5K Run/Walk (Ages 2 to 12)",
+            "with_bibs": 0,
+            "without_bibs": 0
+          },
+          "947832": {
+            "count": 0,
+            "event_name": "1 Mile Fun Run (13 & over)",
+            "with_bibs": 0,
+            "without_bibs": 0
+          }
+        }
+      },
+      "30 days": {
+        "events": 1331,
+        "participants": {
+          "947830": {
+            "count": 0,
+            "event_name": "5K Run/Walk (13 & Over)",
+            "with_bibs": 0,
+            "without_bibs": 0
+          },
+          "947831": {
+            "count": 0,
+            "event_name": "5K Run/Walk (Ages 2 to 12)",
+            "with_bibs": 0,
+            "without_bibs": 0
+          },
+          "947832": {
+            "count": 0,
+            "event_name": "1 Mile Fun Run (13 & over)",
+            "with_bibs": 0,
+            "without_bibs": 0
+          }
+        }
+      }
+    },
+    "comparison": {
+      "full_events": 1331,
+      "future_events": 225,
+      "incremental_comparisons": {
+        "24 hours": {
+          "events": 1331,
+          "event_ratio": 1.0
+        },
+        "7 days": {
+          "events": 1331,
+          "event_ratio": 1.0
+        },
+        "30 days": {
+          "events": 1331,
+          "event_ratio": 1.0
+        }
+      }
+    },
+    "errors": []
+  },
+  "bib_assignment_test": {
+    "timing_partner_id": 1,
+    "participants_with_bibs": 0,
+    "participants_without_bibs": 2,
+    "recent_bib_assignments": 0,
+    "events_tested": 5,
+    "bib_statistics": {
+      "947830": {
+        "event_name": "5K Run/Walk (13 & Over)",
+        "event_date": "2025-09-27 08:30:00",
+        "total_participants": 1,
+        "with_bibs": 0,
+        "without_bibs": 1,
+        "bib_assignment_rate": 0.0,
+        "sample_participants": [],
+        "bib_range": {
+          "min": null,
+          "max": null,
+          "count": 0
+        }
+      },
+      "947831": {
+        "event_name": "5K Run/Walk (Ages 2 to 12)",
+        "event_date": "2025-09-27 08:30:00",
+        "total_participants": 0,
+        "with_bibs": 0,
+        "without_bibs": 0,
+        "bib_assignment_rate": 0,
+        "sample_participants": [],
+        "bib_range": {
+          "min": null,
+          "max": null,
+          "count": 0
+        }
+      },
+      "947832": {
+        "event_name": "1 Mile Fun Run (13 & over)",
+        "event_date": "2025-09-27 08:30:00",
+        "total_participants": 1,
+        "with_bibs": 0,
+        "without_bibs": 1,
+        "bib_assignment_rate": 0.0,
+        "sample_participants": [],
+        "bib_range": {
+          "min": null,
+          "max": null,
+          "count": 0
+        }
+      },
+      "947833": {
+        "event_name": "1 Mile Fun Run  (Ages 2 to 12)",
+        "event_date": "2025-09-27 08:30:00",
+        "total_participants": 0,
+        "with_bibs": 0,
+        "without_bibs": 0,
+        "bib_assignment_rate": 0,
+        "sample_participants": [],
+        "bib_range": {
+          "min": null,
+          "max": null,
+          "count": 0
+        }
+      },
+      "947834": {
+        "event_name": "5K Virtual Run/Walk  (13 & Over)",
+        "event_date": "2025-09-27 00:01:00",
+        "total_participants": 0,
+        "with_bibs": 0,
+        "without_bibs": 0,
+        "bib_assignment_rate": 0,
+        "sample_participants": [],
+        "bib_range": {
+          "min": null,
+          "max": null,
+          "count": 0
+        }
+      }
+    },
+    "sample_bib_data": [],
+    "errors": [],
+    "bib_assignment_rate": 0.0,
+    "total_participants": 2
+  },
+  "summary": {
+    "test_start_time": "2025-07-04T09:27:58.411221",
+    "test_duration_seconds": 1749.233516,
+    "tests_run": 3,
+    "database_type": "SQLite",
+    "database_path": "../../race_results.db",
+    "test_success": {
+      "full_sync": true,
+      "incremental_sync": true,
+      "bib_assignment": true
+    }
+  }
+}
