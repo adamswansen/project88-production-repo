@@ -1,0 +1,49 @@
+[Unit]
+Description=Project88 Dashboard Service
+Documentation=https://github.com/adamswansen/project88-production-repo
+After=network.target postgresql.service redis.service
+Wants=postgresql.service redis.service
+Requires=network.target
+
+[Service]
+Type=simple
+User=appuser
+Group=appuser
+WorkingDirectory=/home/appuser/projects/project88-production-repo/apps/dashboard
+ExecStart=/usr/bin/python3 start_dashboard.py
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=10
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+# Environment
+Environment=FLASK_ENV=production
+Environment=PORT=5004
+Environment=DEBUG=False
+Environment=DB_HOST=localhost
+Environment=DB_PORT=5432
+Environment=DB_NAME=project88_myappdb
+Environment=REDIS_HOST=localhost
+Environment=REDIS_PORT=6379
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/home/appuser/projects/project88-production-repo/apps/dashboard
+ProtectHome=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=project88-dashboard
+
+# Process management
+KillMode=mixed
+KillSignal=SIGTERM
+SendSIGKILL=yes
+
+[Install]
+WantedBy=multi-user.target
+Alias=dashboard.service 
