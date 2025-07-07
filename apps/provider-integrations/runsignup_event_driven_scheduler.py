@@ -59,9 +59,9 @@ class EventDrivenSyncScheduler:
         # Sync configuration with priority-based processing
         self.sync_config = {
             'events_discovery_hours': [6, 18],  # 6 AM and 6 PM
-            'outside_24h_frequency_minutes': 60,  # Every hour
-            'within_24h_frequency_minutes': 5,    # Every 5 minutes
-            'within_4h_frequency_minutes': 1,     # Every minute
+            'outside_24h_frequency_minutes': 240,  # Every 4 hours (was 60)
+            'within_24h_frequency_minutes': 15,    # Every 15 minutes (was 5)
+            'within_4h_frequency_minutes': 1,     # Every minute (unchanged)
             'stop_after_start_hours': 1,          # Stop 1 hour after event start
             'rate_limit_delay': 1,                # Seconds between API calls
             
