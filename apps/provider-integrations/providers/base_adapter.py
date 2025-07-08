@@ -233,9 +233,10 @@ class RateLimiter:
         self._save_calls()
         logger.debug(f"Rate limiter ({self.provider_name}): Recorded API call, total calls: {len(self.calls)}")
         
-        # Mandatory sleep to ensure we never exceed rate limits (1000 calls/hour = ~4 seconds per call)
-        time.sleep(4)
-        logger.debug(f"Rate limiter ({self.provider_name}): Sleeping 4 seconds to prevent rate limit")
+        # Conservative sleep to prevent rate limit issues - reduced from 4 seconds for better performance
+        sleep_time = max(0.5, 3600 / self.max_calls_per_hour - 1)  # Dynamic based on rate limit
+        time.sleep(sleep_time)
+        logger.debug(f"Rate limiter ({self.provider_name}): Sleeping {sleep_time:.1f} seconds to prevent rate limit")
 
 def get_shared_rate_limiter(provider_name: str, max_calls_per_hour: int) -> RateLimiter:
     """Get or create a shared rate limiter for a provider"""
