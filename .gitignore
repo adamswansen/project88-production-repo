@@ -51,6 +51,11 @@ temp/
 *.tar.gz
 *.zip
 
+# Large data files (GitHub size limits)
+migration_exports/ct_participants.csv
+migration_exports/ct_results.csv
+migration_exports/sync_history.csv
+
 # MCP server build artifacts
 build/
 dist/ 
