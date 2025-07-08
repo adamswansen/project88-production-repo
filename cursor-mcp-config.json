@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "project88": {
+      "name": "Project88 Race Timing Platform",
+      "description": "Comprehensive Project88 system context with analytics dashboard and Haku integration",
+      "command": "node",
+      "args": [
+        "/Users/adamswansen/Desktop/Project88/project88-mcp-server/build/simple-server.js"
+      ],
+      "env": {
+        "PROJECT88_ROOT": "/Users/adamswansen/Desktop/Project88",
+        "NODE_ENV": "development"
+      },
+      "capabilities": {
+        "tools": true,
+        "resources": true
+      }
+    }
+  }
+} 

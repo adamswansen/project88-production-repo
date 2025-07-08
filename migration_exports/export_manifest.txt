@@ -1,0 +1,21 @@
+# Project88Hub SQLite Export Manifest
+# Generated: Tue Jul  1 09:39:52 CDT 2025
+# Source: /Users/adamswansen/Desktop/race_results.db
+# Export Directory: /Users/adamswansen/Desktop/Project88/migration_exports
+
+ct_archived_events.csv: 8054 rows
+ct_events.csv: 12882 rows
+ct_participants.csv: 2382268 rows
+ct_races.csv: 28049 rows
+ct_results.csv: 7644983 rows
+partner_provider_credentials.csv: 46 rows
+providers.csv: 5 rows
+runsignup_events.csv: 1328 rows
+runsignup_participant_counts.csv: 1164 rows
+runsignup_participants.csv: 38362 rows
+runsignup_races.csv: 2770 rows
+sync_history.csv: 676924 rows
+sync_queue.csv: 0 rows
+timing_partner_haku_orgs.csv: 4 rows
+timing_partners.csv: 13 rows
+users.csv: 34 rows

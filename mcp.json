@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "project88": {
+      "command": "node",
+      "args": ["/Users/adamswansen/Desktop/Project88/project88-mcp-server/build/index.js"],
+      "env": {
+        "NODE_ENV": "production"
+      }
+    }
+  }
+} 

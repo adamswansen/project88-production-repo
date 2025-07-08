@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "project88": {
+      "command": "node",
+      "args": [
+        "/Users/adamswansen/Desktop/Project88/project88-mcp-server/build/simple-server.js"
+      ],
+      "env": {
+        "PROJECT88_ROOT": "/Users/adamswansen/Desktop/Project88",
+        "NODE_ENV": "development",
+        "DEBUG": "false"
+      }
+    }
+  }
+} 

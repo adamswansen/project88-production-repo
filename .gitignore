@@ -1,0 +1,56 @@
+# Project88 GitIgnore
+
+# Production repository (separate git repo)
+project88-production-repo/
+
+# Environment files
+.env
+*.env
+config.env
+
+# Logs
+*.log
+logs/
+
+# Node modules
+node_modules/
+npm-debug.log*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+*.egg-info/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+.cache/
+
+# Database
+*.sqlite
+*.db
+
+# Archives
+*.tar.gz
+*.zip
+
+# MCP server build artifacts
+build/
+dist/ 
