@@ -26,10 +26,17 @@ The Project88 MCP server has been comprehensively updated with **Alex's major ad
 - **Production-ready** with event-driven scheduler and backfill system
 - **Cognito User Pools authentication**
 
+### 🏁 **Race Roster Event-Driven Scheduler** (NEW)
+- **Sophisticated event-driven sync** matching RunSignUp's advanced logic
+- **Dynamic frequency** based on event proximity (every minute near events, every 4 hours for distant)
+- **Priority-based processing** with automatic event discovery twice daily
+- **Production deployment** with 10 Race Roster events actively syncing
+- **Real-time participant data** with incremental sync optimization
+
 ### 🏗️ **Enhanced Architecture**
 - **7 microservices** (was 6) - now includes analytics dashboard
-- **85% completion** (was 77%) - 12 of 14 business requirements complete
-- **Complete results integration** for all major providers
+- **92% completion** (was 85%) - 13 of 14 business requirements complete
+- **Complete results integration** for all major providers including Race Roster
 - **Updated system knowledge** with latest infrastructure and capabilities
 
 ## 🚀 **What This MCP Server Provides**
@@ -45,8 +52,9 @@ This MCP server gives AI assistants (like Claude) comprehensive, real-time conte
 ### **🔗 Provider Integration Layer**
 - **RunSignUp**: 13 integrations - **COMPLETE** registration + results data
 - **Haku**: 7 integrations (PRIMARY provider) - Production ready
+- **Race Roster**: **COMPLETE** event-driven scheduler with 10+ active events
 - **ChronoTrack**: Highest volume - 12,882 events, 2,382,266 participants, 7,644,980 results
-- **Race Roster & Copernico**: Database schemas ready for integration
+- **Copernico**: Database schema ready for integration
 
 ### **🏗️ Service Architecture**
 1. **Analytics Dashboard** (`dashboard.project88hub.com`) - Real-time system metrics
@@ -59,10 +67,10 @@ This MCP server gives AI assistants (like Claude) comprehensive, real-time conte
 8. **Provider Integrations** - Automated daily sync and backfill systems
 
 ### **📊 Business Intelligence**
-- **Completion Status**: 85% (12 of 14 requirements implemented)
+- **Completion Status**: 92% (13 of 14 requirements implemented)
 - **Performance Metrics**: 30x sync optimization, real-time monitoring
 - **Deployment Status**: Production-ready with comprehensive infrastructure
-- **Results Integration**: Complete historical and real-time results collection
+- **Results Integration**: Complete historical and real-time results collection including Race Roster
 
 ## 🛠️ **Tools Available**
 
@@ -133,6 +141,7 @@ With this MCP server, AI assistants can help with:
 
 ### **New Capabilities**
 - **RunSignUp Results**: Complete race results collection and analysis
+- **Race Roster Integration**: Sophisticated event-driven scheduler with dynamic frequency
 - **Historical Backfill**: Processing years of historical race results
 - **Automated Scheduling**: Daily sync with intelligent checking intervals
 - **Analytics Dashboard**: Understanding system metrics and performance data
@@ -171,8 +180,8 @@ The MCP server has comprehensive knowledge of:
 **After Complete Integration:**
 - **7 microservices** (added analytics dashboard)
 - **5 provider integrations** with complete data collection
-- **85% business requirements** completion (12 of 14)
-- **Complete RunSignUp results integration** with historical backfill
+- **92% business requirements** completion (13 of 14)
+- **Complete RunSignUp + Race Roster integration** with event-driven schedulers
 - **Comprehensive analytics** with real-time metrics
 - **Enhanced monitoring** and performance tracking
 - **Production-ready automated systems** for continuous data collection
